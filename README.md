@@ -1,76 +1,77 @@
-# Cloud-Hive Meadow Maya Project
+# Cloud-Hive Meadow
 
-Procedural visual prototype for a stylized honeycomb resource scene in Maya.
+Cloud-Hive Meadow is a Maya Python course project for building a stylized procedural honeycomb resource-management scene in Autodesk Maya.
 
-## What This Version Contains
+## Goal
 
-- Hexagonal honeycomb terrain made from tightly packed prism cells.
-- Uneven cell heights and type-based materials.
-- Cloud clusters represented by particle-like spheres.
-- Honey rain and hanging nectar drops under the cloud clusters.
-- Placeholder bees represented by small cuboids.
-- Nectar and pollen resource drops represented by small colored spheres.
-- BFS path visualization across the honeycomb graph.
-- A simple Maya UI for regenerating the scene with core parameters.
+A stylized procedural honeycomb resource-management scene in Maya Python.
 
-## How To Run In Maya
+Cloud flowers generate resources, resource drops fall onto a honeycomb terrain, bees correct misplaced resources, and the final scene visualizes resource flow, bee movement, paths, and cell state changes.
 
-1. Open Maya.
-2. Open the Script Editor.
-3. Run:
+## MVP Features
 
-```python
-exec(open(r"C:\Users\YUN\Desktop\CloudHiveMeadow_Maya\maya_scripts\cloud_hive_meadow.py").read())
-```
+- Hexagonal honeycomb terrain
+- Cell type assignment
+- Cloud resource generation
+- Resource drop mapping
+- Task creation
+- BFS pathfinding
+- Bee animation
+- Maya UI
+- Visual demonstration
 
-If you run it from another location, change the path to the script.
-
-## Replace Placeholder Models Later
-
-Asset placeholders are reserved in `assets/models/`:
-
-- `bee_placeholder.ma` or `bee_placeholder.fbx`
-- `cloud_particle_placeholder.ma` or `cloud_particle_placeholder.fbx`
-- `honey_cell_detail.ma`
-- `pollen_cell_detail.ma`
-- `capped_cell_detail.ma`
-- `resource_nectar.ma`
-- `resource_pollen.ma`
-- `central_hive_placeholder.ma`
-
-The current script uses Maya primitive shapes only. Later, replace the body of:
-
-- `create_bee_placeholder`
-- `create_cloud_cluster`
-- `create_resource_drop`
-- `create_cell_geometry`
-
-## Algorithm Handoff
-
-See `docs/algorithm_interface_todo.md` for the interface plan and TODO list for turning the static visual prototype into a running resource collection system.
-
-## Folder Layout
+## Code Organization
 
 ```text
-CloudHiveMeadow_Maya/
-  assets/
-    models/
-    textures/
-    references/
-  docs/
-    algorithm_interface_todo.md
-    asset_placeholders.md
-  maya_scripts/
-    cloud_hive_meadow.py
-  scenes/
+code/
+  main.py
+  config.py
+  hive_module.py
+  cloud_resource_module.py
+  bee_task_module.py
+  ui_module.py
+  visual_module.py
+
+docs/
+  system_design.md
+  task_plan.md
+  codex_prompts.md
+  algorithm_interface_todo.md
+  asset_placeholders.md
+
+presentation/
+report/
+results/images/
+results/video/
+scenes/
+assets/
+maya_scripts/
 ```
 
-## Visual Scope
+### Planned Module Roles
 
-This first version focuses on visual effect and project scaffolding:
+- `code/config.py`: shared constants, resource names, cell types, and scene settings.
+- `code/hive_module.py`: pure Python honeycomb grid logic, cell assignment, nearest-cell lookup, and Maya-only honeycomb geometry creation.
+- `code/cloud_resource_module.py`: pure Python resource generation and drop mapping, plus Maya-only cloud and drop visualization.
+- `code/bee_task_module.py`: pure Python task creation and BFS pathfinding, plus Maya-only bee movement animation.
+- `code/ui_module.py`: Maya UI controls and callbacks.
+- `code/visual_module.py`: Maya scene materials, debug overlays, path drawing, and final presentation visuals.
+- `code/main.py`: future entry point that coordinates modules.
 
-- Bees are small cuboids.
-- Clouds are sphere clusters.
-- Flowers are intentionally skipped.
-- Honeycomb cells are close-packed hexagonal columns with varied heights and simple wax rims.
-- Paths, wrong drops, and resource particles are visible for algorithm presentation.
+The existing `maya_scripts/cloud_hive_meadow.py` is kept as a useful visual prototype/reference script while the new modular structure is developed.
+
+## Core Loop
+
+1. Cloud flowers generate nectar and pollen.
+2. Resource drops fall toward the honeycomb terrain.
+3. Drops are mapped to the nearest honeycomb cells.
+4. The system checks whether the resource landed in the correct cell type.
+5. Wrong cell types create transport or cleaning tasks.
+6. Bees use BFS on the hexagonal honeycomb graph to move resources to the nearest correct storage cell.
+7. The final result visualizes resource drops, paths, bee movement, and cell state changes.
+
+## Development Note
+
+Pure Python logic should be testable outside Maya. This includes hex-grid data structures, nearest-cell mapping, resource validation, task creation, and BFS pathfinding.
+
+Functions that import or call `maya.cmds` must be clearly marked as Maya-specific and tested later inside Autodesk Maya.
