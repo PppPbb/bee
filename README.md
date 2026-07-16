@@ -75,3 +75,7 @@ The existing `maya_scripts/cloud_hive_meadow.py` is kept as a useful visual prot
 Pure Python logic should be testable outside Maya. This includes hex-grid data structures, nearest-cell mapping, resource validation, task creation, and BFS pathfinding.
 
 Functions that import or call `maya.cmds` must be clearly marked as Maya-specific and tested later inside Autodesk Maya.
+
+## Continuous Integration
+
+GitHub Actions runs a lightweight Python syntax check for the pure Python scaffold with `python -m py_compile code/*.py`. This CI does not run Maya-specific tests because `maya.cmds` is only available inside Autodesk Maya.
