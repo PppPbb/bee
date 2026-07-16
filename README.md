@@ -45,6 +45,10 @@ The current script uses Maya primitive shapes only. Later, replace the body of:
 - `create_resource_drop`
 - `create_cell_geometry`
 
+## Algorithm Handoff
+
+See `docs/algorithm_interface_todo.md` for the interface plan and TODO list for turning the static visual prototype into a running resource collection system.
+
 ## Folder Layout
 
 ```text
@@ -54,6 +58,8 @@ CloudHiveMeadow_Maya/
     textures/
     references/
   docs/
+    algorithm_interface_todo.md
+    asset_placeholders.md
   maya_scripts/
     cloud_hive_meadow.py
   scenes/
