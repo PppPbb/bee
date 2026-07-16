@@ -93,3 +93,18 @@ For each Python file, add a module-level docstring and TODO comments only. Do no
 
 Please make the repository clean and suitable for a Maya Python assignment.
 ```
+
+## Development Prompt 2
+
+```text
+Implement the first core module, code/hive_module.py, for the honeycomb system.
+Keep pure Python logic testable outside Maya, import maya.cmds only inside Maya-specific functions, and add a pure Python self-test.
+```
+
+Implemented:
+
+- Added axial-coordinate world conversion for flat XZ-plane honeycomb placement.
+- Added hex grid generation with cell dictionaries matching the project data interface.
+- Added cell lookup helpers, neighbor calculation, deterministic cell type assignment, nearest-storage lookup, and BFS pathfinding.
+- Added Maya-only honeycomb prism geometry creation and BFS path highlighting helpers.
+- Documented the hive module interface in `docs/system_design.md`.

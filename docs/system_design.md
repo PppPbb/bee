@@ -33,6 +33,20 @@ Responsibilities:
 
 Planned module: `code/hive_module.py`
 
+Current pure Python interface:
+
+- `axial_to_world(q, r, cell_size)`: converts axial coordinates to a flat XZ-plane world position.
+- `generate_hex_grid(size, cell_size)`: creates cell dictionaries for a circular axial hex grid.
+- `calculate_neighbors(cells)`: fills graph edges using the six axial neighbor directions.
+- `assign_cell_types(cells, ...)`: assigns honey, pollen, empty, and capped states reproducibly.
+- `find_nearest_storage_cell(cells, start_cell_id, target_type)`: returns the closest reachable matching storage cell.
+- `bfs_find_path(cells, start_cell_id, target_type)`: returns the shortest non-blocked path to a matching target type.
+
+Current Maya-only interface:
+
+- `create_honeycomb_geometry(cells, cell_size, cell_depth)`: creates six-sided prism cell geometry and type materials in Maya.
+- `highlight_path(path, cells)`: creates a simple Maya path visualization for BFS output.
+
 ### Cloud Resource System
 
 Responsibilities:
