@@ -139,3 +139,17 @@ Implemented:
 - Added bee dictionaries, task selection by priority and XZ distance, BFS path assignment through `hive_module.bfs_find_path()`, task completion, and task summaries.
 - Added Maya-only bee geometry, bee path animation, and task path visualization helpers.
 - Documented how `bee_task_module` connects mapped drops from `cloud_resource_module` with BFS paths from `hive_module`.
+
+## Development Prompt 5
+
+```text
+Implement code/main.py as the first pure Python end-to-end integration script for Cloud-Hive Meadow.
+Update local main, create feature/main-integration, run the core loop outside Maya, load defaults from config.py if possible, print a clear summary, and update project documentation.
+```
+
+Implemented:
+
+- Added default pure Python integration parameters in `code/config.py`.
+- Added `code/main.py` to generate the hive, clouds, drops, mapped cells, tasks, BFS paths, bees, and completed reachable transport tasks.
+- Added readable integration summary output for cell counts, drop counts, task summaries, BFS path counts, and an example path.
+- Documented the main integration script interface in `docs/system_design.md`.

@@ -112,6 +112,31 @@ Integration notes:
 - `bee_task_module` uses honeycomb cells and BFS paths from `hive_module`.
 - Capped cells are treated as blocked; they create high-priority cleanup tasks and are not used as storage or BFS path cells.
 
+### Main Integration Script
+
+Responsibilities:
+
+- Run the pure Python MVP loop outside Autodesk Maya.
+- Load default integration parameters from `code/config.py`.
+- Generate honeycomb cells, cloud resources, resource drops, mapped drops, tasks, BFS paths, and bees.
+- Assign tasks to bees and complete a small number of reachable transport tasks in pure Python.
+- Print a readable summary for course debugging and milestone demos.
+
+Planned module: `code/main.py`
+
+Current pure Python interface:
+
+- `load_parameters()`: loads default integration parameters from `code/config.py` when available.
+- `count_cell_types(cells)`: summarizes generated honeycomb cell types.
+- `complete_reachable_tasks(tasks, cells, max_tasks_to_complete)`: completes path-bearing transport tasks.
+- `run_simulation(parameters)`: executes the full non-Maya core loop and returns simulation data.
+- `print_summary(simulation_result)`: prints the integration summary.
+
+Integration notes:
+
+- `main.py` must not import `maya.cmds`.
+- Maya geometry and animation remain in module-specific Maya-only helper functions for later Autodesk Maya testing.
+
 ## Data Interfaces
 
 The MVP should use simple Python data structures first, then move to dataclasses if needed.
