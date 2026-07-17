@@ -54,7 +54,7 @@ FALLBACK_PARAMETERS = {
         "start_position": [0.0, 0.8, 0.0],
     },
     "tasks": {
-        "max_tasks_to_complete": 3,
+        "max_tasks_to_complete": 999,
     },
 }
 
@@ -109,14 +109,65 @@ def complete_reachable_tasks(tasks, cells, max_tasks_to_complete):
         if task.get("status") == "done":
             continue
 
+        target_cell_id = task.get("path", [None])[-1]
+        target_cell = next((cell for cell in cells if cell["id"] == target_cell_id), None)
+        resource_field = task.get("resource_type")
+        before_amount = (
+            float(target_cell.get(resource_field, 0.0))
+            if target_cell is not None and resource_field in ("nectar", "pollen")
+            else 0.0
+        )
+
         moved_amount = complete_task(task, cells)
-        if moved_amount > 0.0 and task.get("status") == "done":
+        if moved_amount > 0.0:
+            task["resource_event"] = {
+                "task_id": task["id"],
+                "source_cell": task.get("source_cell"),
+                "target_cell": task.get("target_cell"),
+                "resource_type": task.get("resource_type"),
+                "amount": moved_amount,
+                "before_amount": before_amount,
+                "after_amount": before_amount + moved_amount,
+                "became_capped": bool(task.get("became_capped")),
+            }
             completed_tasks.append(task)
 
     return completed_tasks
 
 
-def run_simulation(parameters=None):
+def _apply_prior_cell_state(cells, prior_cell_state):
+    """Restore persistent resource and capped state for a new simulation step."""
+    if not prior_cell_state:
+        return
+    state_by_id = {item["id"]: item for item in prior_cell_state}
+    for cell in cells:
+        state = state_by_id.get(cell["id"])
+        if state is None:
+            continue
+        for field in ("type", "nectar", "pollen", "capacity", "is_blocked"):
+            if field in state:
+                cell[field] = state[field]
+
+
+def _assign_task_queues(bees, completed_tasks):
+    """Distribute all successful transport tasks across worker queues."""
+    for bee in bees:
+        bee["task_queue"] = []
+        bee["current_task"] = None
+    if not bees:
+        return
+
+    for index, task in enumerate(completed_tasks):
+        bee = bees[index % len(bees)]
+        bee["task_queue"].append(task["id"])
+        task["status"] = "queued"
+
+    for bee in bees:
+        if bee["task_queue"]:
+            bee["current_task"] = bee["task_queue"][0]
+
+
+def run_simulation(parameters=None, prior_cell_state=None):
     """Run the pure Python Cloud-Hive Meadow resource-management loop.
 
     Parameters:
@@ -146,6 +197,7 @@ def run_simulation(parameters=None):
         capped_ratio=hive_params["capped_ratio"],
         seed=hive_params["seed"],
     )
+    _apply_prior_cell_state(cells, prior_cell_state)
 
     clouds = create_cloud_data(**cloud_params)
     drops = generate_resource_drops(clouds, **drop_params)
@@ -154,22 +206,31 @@ def run_simulation(parameters=None):
     tasks = create_tasks_from_drops(drops, cells)
     assign_paths_to_tasks(tasks, cells)
 
+    for cell in cells:
+        cell["initial_type"] = cell.get("type")
+        cell["initial_nectar"] = float(cell.get("nectar", 0.0))
+        cell["initial_pollen"] = float(cell.get("pollen", 0.0))
+
     bees = create_bees(
         bee_count=bee_params["bee_count"],
         start_position=bee_params["start_position"],
     )
-    for bee in bees:
-        select_task_for_bee(bee, tasks, cells)
-
     completed_tasks = complete_reachable_tasks(
         tasks,
         cells,
         max_tasks_to_complete=task_params["max_tasks_to_complete"],
     )
+    _assign_task_queues(bees, completed_tasks)
 
     tasks_with_paths = [task for task in tasks if task.get("path")]
     example_task = tasks_with_paths[0] if tasks_with_paths else None
     drop_summary = summarize_drop_mapping(drops)
+    blocked_tasks = [task for task in tasks if not task.get("path")]
+    resource_events = [
+        task["resource_event"]
+        for task in completed_tasks
+        if task.get("resource_event")
+    ]
 
     return {
         "cells": cells,
@@ -178,6 +239,7 @@ def run_simulation(parameters=None):
         "tasks": tasks,
         "bees": bees,
         "completed_tasks": completed_tasks,
+        "resource_events": resource_events,
         "summary": {
             "cell_count": len(cells),
             "cell_type_counts": count_cell_types(cells),
@@ -187,6 +249,8 @@ def run_simulation(parameters=None):
             "task_count": len(tasks),
             "task_summary": summarize_tasks(tasks),
             "tasks_with_paths": len(tasks_with_paths),
+            "blocked_task_count": len(blocked_tasks),
+            "queued_task_count": len(completed_tasks),
             "example_task_path": example_task.get("path") if example_task else [],
         },
     }

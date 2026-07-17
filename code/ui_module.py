@@ -1,291 +1,381 @@
-"""Maya UI controls for the Cloud-Hive Meadow MVP."""
+"""Maya control panel for Cloud-Hive Meadow."""
 
-from config import DEFAULT_INTEGRATION_PARAMETERS
-from main import print_summary, run_simulation
-from visual_module import clear_scene, create_maya_scene
+import copy
 
 
 WINDOW_NAME = "CloudHiveControlPanel"
 WINDOW_TITLE = "Cloud-Hive Control Panel"
+CONTROLS = {}
+LAST_SCENE_DATA = None
+CURRENT_PARAMETERS = None
+SIMULATION_STEP = 0
 
 
-def create_cloud_hive_ui():
-    """Create the Maya control panel for Cloud-Hive Meadow.
+def _int_value(cmds, name):
+    """Return an integer slider value from the active Maya UI."""
+    return cmds.intSliderGrp(CONTROLS[name], query=True, value=True)
 
-    This is a Maya-only function. It imports maya.cmds inside the function body
-    so this module can still be compiled and imported outside Autodesk Maya.
+
+def _float_value(cmds, name):
+    """Return a float slider value from the active Maya UI."""
+    return cmds.floatSliderGrp(CONTROLS[name], query=True, value=True)
+
+
+def _bool_value(cmds, name):
+    """Return a checkbox value from the active Maya UI."""
+    return cmds.checkBox(CONTROLS[name], query=True, value=True)
+
+
+def _ensure_controls(cmds):
+    """Rebuild the panel when Maya invokes a callback from a stale window."""
+    required = (
+        "hive_size",
+        "cell_size",
+        "honey_ratio",
+        "pollen_ratio",
+        "capped_ratio",
+        "cloud_count",
+        "flower_count",
+        "nectar_drop_rate",
+        "pollen_drop_rate",
+        "wind_strength",
+        "wind_direction",
+        "bee_count",
+        "animation_end",
+        "drop_fall_frames",
+        "bee_frame_step",
+        "show_paths",
+        "status",
+    )
+    controls_are_valid = all(
+        name in CONTROLS and cmds.control(CONTROLS[name], exists=True)
+        for name in required
+    )
+    if not controls_are_valid:
+        show_ui(LAST_SCENE_DATA)
+
+
+def _read_parameters(cmds):
+    """Build a fresh parameter dictionary from the current GUI values."""
+    from main import load_parameters
+
+    parameters = copy.deepcopy(load_parameters())
+    hive = parameters["hive"]
+    clouds = parameters["clouds"]
+    drops = parameters["drops"]
+    bees = parameters["bees"]
+    visual = parameters.setdefault("visual", {})
+
+    hive["size"] = _int_value(cmds, "hive_size")
+    hive["cell_size"] = _float_value(cmds, "cell_size")
+
+    honey_ratio = _float_value(cmds, "honey_ratio")
+    pollen_ratio = _float_value(cmds, "pollen_ratio")
+    capped_ratio = _float_value(cmds, "capped_ratio")
+    hive["honey_ratio"] = honey_ratio
+    hive["pollen_ratio"] = pollen_ratio
+    hive["capped_ratio"] = capped_ratio
+    hive["empty_ratio"] = max(0.0, 1.0 - honey_ratio - pollen_ratio - capped_ratio)
+
+    clouds["cloud_count"] = _int_value(cmds, "cloud_count")
+    drops["nectar_drop_rate"] = _int_value(cmds, "nectar_drop_rate")
+    drops["pollen_drop_rate"] = _int_value(cmds, "pollen_drop_rate")
+    drops["wind_strength"] = _float_value(cmds, "wind_strength")
+    drops["wind_direction_degrees"] = _float_value(cmds, "wind_direction")
+    bees["bee_count"] = _int_value(cmds, "bee_count")
+
+    visual["flowers_per_cloud"] = _int_value(cmds, "flower_count")
+    visual["animation_end"] = _int_value(cmds, "animation_end")
+    visual["drop_fall_frames"] = _int_value(cmds, "drop_fall_frames")
+    visual["bee_frame_step"] = _int_value(cmds, "bee_frame_step")
+    visual["show_paths"] = _bool_value(cmds, "show_paths")
+    return parameters
+
+
+def build_config_from_ui(controls=None):
+    """Build an integration config dictionary from the current Maya UI controls.
 
     Parameters:
-        None.
+        controls (dict | None): Optional control mapping. When provided, it
+            becomes the active mapping used by the UI callbacks.
+
+    Returns:
+        dict: Configuration dictionary for run_simulation() or create_maya_scene().
+    """
+    import maya.cmds as cmds
+
+    if controls is not None:
+        CONTROLS.update(controls)
+    _ensure_controls(cmds)
+    return _read_parameters(cmds)
+
+
+def _capture_cell_state(scene_data):
+    """Keep resource and capped state between simulation steps."""
+    if not scene_data:
+        return None
+    fields = ("id", "type", "nectar", "pollen", "capacity", "is_blocked")
+    return [
+        {field: cell[field] for field in fields if field in cell}
+        for cell in scene_data.get("cells", [])
+    ]
+
+
+def _set_status(cmds, label):
+    """Update the UI status label when the window is available."""
+    if "status" in CONTROLS and cmds.control(CONTROLS["status"], exists=True):
+        cmds.text(CONTROLS["status"], edit=True, label=label)
+
+
+def _update_status(cmds):
+    """Show a compact summary of the latest scene data."""
+    if not LAST_SCENE_DATA:
+        _set_status(cmds, "Adjust parameters, then generate.")
+        return
+
+    summary = LAST_SCENE_DATA["summary"]
+    label = (
+        "Step {0} | Drops {1} | Queued {2} | Blocked {3} | Animated tasks {4}"
+    ).format(
+        SIMULATION_STEP,
+        summary["drop_count"],
+        summary.get("queued_task_count", 0),
+        summary.get("blocked_task_count", 0),
+        len(LAST_SCENE_DATA.get("animation_records", [])),
+    )
+    _set_status(cmds, label)
+
+
+def generate_from_ui(*_args):
+    """Read UI values, rerun the algorithms, and rebuild the Maya scene."""
+    import maya.cmds as cmds
+    from main import print_summary
+    from visual_module import create_maya_scene
+
+    global LAST_SCENE_DATA, CURRENT_PARAMETERS, SIMULATION_STEP
+    _ensure_controls(cmds)
+    CURRENT_PARAMETERS = _read_parameters(cmds)
+    SIMULATION_STEP = 0
+
+    _set_status(cmds, "Generating scene...")
+    cmds.refresh(force=True)
+    LAST_SCENE_DATA = create_maya_scene(CURRENT_PARAMETERS)
+    _update_status(cmds)
+    cmds.currentTime(1)
+    print("Generated Cloud-Hive scene from UI.")
+    print_summary(LAST_SCENE_DATA)
+    return LAST_SCENE_DATA
+
+
+def clear_scene_from_ui(*_args):
+    """Clear generated Cloud-Hive Meadow scene objects from Maya."""
+    import maya.cmds as cmds
+    from visual_module import clear_scene
+
+    global LAST_SCENE_DATA, SIMULATION_STEP
+    cmds.play(state=False)
+    clear_scene()
+    LAST_SCENE_DATA = None
+    SIMULATION_STEP = 0
+    _update_status(cmds)
+    print("Cleared Cloud-Hive Meadow scene objects.")
+
+
+def run_pure_python_summary(*_args):
+    """Run the pure Python simulation with current UI values and print a summary."""
+    import maya.cmds as cmds
+    from main import print_summary, run_simulation
+
+    _ensure_controls(cmds)
+    parameters = _read_parameters(cmds)
+    simulation = run_simulation(parameters)
+    print_summary(simulation)
+    _set_status(cmds, "Pure Python summary printed to Script Editor.")
+    return simulation
+
+
+def next_simulation_step(*_args):
+    """Generate new drops while preserving honeycomb resource state."""
+    import maya.cmds as cmds
+    from visual_module import create_maya_scene
+
+    global LAST_SCENE_DATA, CURRENT_PARAMETERS, SIMULATION_STEP
+    _ensure_controls(cmds)
+    if CURRENT_PARAMETERS is None:
+        CURRENT_PARAMETERS = _read_parameters(cmds)
+
+    prior_cell_state = _capture_cell_state(LAST_SCENE_DATA)
+    SIMULATION_STEP += 1
+    CURRENT_PARAMETERS = copy.deepcopy(CURRENT_PARAMETERS)
+    CURRENT_PARAMETERS["drops"]["seed"] += 97
+    cmds.play(state=False)
+    _set_status(cmds, "Building next step...")
+    cmds.refresh(force=True)
+    LAST_SCENE_DATA = create_maya_scene(
+        CURRENT_PARAMETERS,
+        prior_cell_state=prior_cell_state,
+    )
+    _update_status(cmds)
+    cmds.currentTime(1)
+    return LAST_SCENE_DATA
+
+
+def play_animation(*_args):
+    """Play the Maya timeline."""
+    import maya.cmds as cmds
+
+    cmds.play(forward=True)
+
+
+def pause_animation(*_args):
+    """Pause the Maya timeline."""
+    import maya.cmds as cmds
+
+    cmds.play(state=False)
+
+
+def reset_animation(*_args):
+    """Reset the Maya timeline to frame 1."""
+    import maya.cmds as cmds
+
+    cmds.play(state=False)
+    cmds.currentTime(1)
+
+
+def create_cloud_hive_ui(initial_scene_data=None):
+    """Create and show the Cloud-Hive Control Panel.
+
+    Parameters:
+        initial_scene_data (dict | None): Optional scene data used to seed the
+            status label.
 
     Returns:
         str: Maya window name.
     """
+    return show_ui(initial_scene_data)
+
+
+def show_ui(initial_scene_data=None):
+    """Create and show the Cloud-Hive Meadow Maya control panel."""
     import maya.cmds as cmds
+    from main import load_parameters
+
+    global LAST_SCENE_DATA, CURRENT_PARAMETERS, SIMULATION_STEP
+    defaults = copy.deepcopy(load_parameters())
+    LAST_SCENE_DATA = initial_scene_data
+    CURRENT_PARAMETERS = copy.deepcopy(defaults)
+    SIMULATION_STEP = 0
 
     if cmds.window(WINDOW_NAME, exists=True):
         cmds.deleteUI(WINDOW_NAME)
+    CONTROLS.clear()
 
-    controls = {}
-    defaults = DEFAULT_INTEGRATION_PARAMETERS
-    hive = defaults["hive"]
-    clouds = defaults["clouds"]
-    drops = defaults["drops"]
-    bees = defaults["bees"]
-    visual = defaults.get("visual", {})
+    window = cmds.window(
+        WINDOW_NAME,
+        title=WINDOW_TITLE,
+        widthHeight=(420, 760),
+        sizeable=True,
+    )
+    cmds.columnLayout(adjustableColumn=True, rowSpacing=7)
+    cmds.text(label="Cloud-Hive Meadow", height=30)
 
-    window = cmds.window(WINDOW_NAME, title=WINDOW_TITLE, sizeable=False)
-    cmds.columnLayout(adjustableColumn=True, rowSpacing=8, columnAttach=("both", 10))
+    hive_defaults = defaults["hive"]
+    cloud_defaults = defaults["clouds"]
+    drop_defaults = defaults["drops"]
+    bee_defaults = defaults["bees"]
+    visual_defaults = defaults.get("visual", {})
 
-    cmds.text(label="Cloud-Hive Meadow", align="center", height=28)
-    cmds.separator(height=8, style="in")
-
-    controls["hive_size"] = cmds.intSliderGrp(
-        label="Honeycomb Size",
-        field=True,
-        minValue=1,
-        maxValue=8,
-        fieldMinValue=1,
-        fieldMaxValue=20,
-        value=hive["size"],
+    cmds.frameLayout(label="Hive", collapsable=True, marginWidth=8, marginHeight=8)
+    CONTROLS["hive_size"] = cmds.intSliderGrp(
+        label="Honeycomb Size", field=True, minValue=1, maxValue=8,
+        fieldMinValue=1, fieldMaxValue=20, value=hive_defaults["size"],
     )
-    controls["cell_size"] = cmds.floatSliderGrp(
-        label="Cell Size",
-        field=True,
-        minValue=0.5,
-        maxValue=2.0,
-        fieldMinValue=0.1,
-        fieldMaxValue=5.0,
-        value=hive["cell_size"],
-        precision=2,
+    CONTROLS["cell_size"] = cmds.floatSliderGrp(
+        label="Cell Size", field=True, minValue=0.5, maxValue=2.0,
+        fieldMinValue=0.1, fieldMaxValue=5.0,
+        value=hive_defaults["cell_size"], precision=2,
     )
-    controls["honey_ratio"] = cmds.floatSliderGrp(
-        label="Honey Ratio",
-        field=True,
-        minValue=0.0,
-        maxValue=1.0,
-        value=hive["honey_ratio"],
-        precision=2,
+    CONTROLS["honey_ratio"] = cmds.floatSliderGrp(
+        label="Honey Ratio", field=True, minValue=0.0, maxValue=1.0,
+        value=hive_defaults["honey_ratio"], precision=2,
     )
-    controls["pollen_ratio"] = cmds.floatSliderGrp(
-        label="Pollen Ratio",
-        field=True,
-        minValue=0.0,
-        maxValue=1.0,
-        value=hive["pollen_ratio"],
-        precision=2,
+    CONTROLS["pollen_ratio"] = cmds.floatSliderGrp(
+        label="Pollen Ratio", field=True, minValue=0.0, maxValue=1.0,
+        value=hive_defaults["pollen_ratio"], precision=2,
     )
-    controls["capped_ratio"] = cmds.floatSliderGrp(
-        label="Capped Ratio",
-        field=True,
-        minValue=0.0,
-        maxValue=1.0,
-        value=hive["capped_ratio"],
-        precision=2,
+    CONTROLS["capped_ratio"] = cmds.floatSliderGrp(
+        label="Capped Ratio", field=True, minValue=0.0, maxValue=1.0,
+        value=hive_defaults["capped_ratio"], precision=2,
     )
-
-    cmds.separator(height=8, style="in")
-
-    controls["cloud_count"] = cmds.intSliderGrp(
-        label="Cloud Count",
-        field=True,
-        minValue=1,
-        maxValue=8,
-        fieldMinValue=1,
-        fieldMaxValue=20,
-        value=clouds["cloud_count"],
-    )
-    controls["nectar_drop_rate"] = cmds.intSliderGrp(
-        label="Nectar Drop Rate",
-        field=True,
-        minValue=0,
-        maxValue=8,
-        fieldMinValue=0,
-        fieldMaxValue=30,
-        value=drops["nectar_drop_rate"],
-    )
-    controls["pollen_drop_rate"] = cmds.intSliderGrp(
-        label="Pollen Drop Rate",
-        field=True,
-        minValue=0,
-        maxValue=8,
-        fieldMinValue=0,
-        fieldMaxValue=30,
-        value=drops["pollen_drop_rate"],
-    )
-    controls["wind_strength"] = cmds.floatSliderGrp(
-        label="Wind Strength",
-        field=True,
-        minValue=0.0,
-        maxValue=3.0,
-        fieldMinValue=0.0,
-        fieldMaxValue=10.0,
-        value=drops["wind_strength"],
-        precision=2,
-    )
-    controls["wind_direction"] = cmds.floatSliderGrp(
-        label="Wind Direction",
-        field=True,
-        minValue=0.0,
-        maxValue=360.0,
-        fieldMinValue=0.0,
-        fieldMaxValue=360.0,
-        value=drops["wind_direction_degrees"],
-        precision=1,
-    )
-
-    cmds.separator(height=8, style="in")
-
-    controls["bee_count"] = cmds.intSliderGrp(
-        label="Bee Count",
-        field=True,
-        minValue=1,
-        maxValue=12,
-        fieldMinValue=1,
-        fieldMaxValue=40,
-        value=bees["bee_count"],
-    )
-    controls["show_paths"] = cmds.checkBox(
-        label="Show Paths",
-        value=visual.get("show_paths", True),
-    )
-
-    cmds.separator(height=10, style="in")
-
-    cmds.button(
-        label="Generate Scene",
-        height=34,
-        command=lambda *_: _on_generate_scene(controls),
-    )
-    cmds.button(
-        label="Clear Scene",
-        height=28,
-        command=lambda *_: _on_clear_scene(),
-    )
-    cmds.button(
-        label="Run Pure Python Summary",
-        height=28,
-        command=lambda *_: _on_run_summary(controls),
-    )
-
     cmds.setParent("..")
+
+    cmds.frameLayout(label="Cloud Resources", collapsable=True, marginWidth=8, marginHeight=8)
+    CONTROLS["cloud_count"] = cmds.intSliderGrp(
+        label="Cloud Count", field=True, minValue=1, maxValue=8,
+        fieldMinValue=1, fieldMaxValue=20, value=cloud_defaults["cloud_count"],
+    )
+    CONTROLS["flower_count"] = cmds.intSliderGrp(
+        label="Flowers / Cloud", field=True, minValue=1, maxValue=16,
+        value=visual_defaults.get("flowers_per_cloud", 7),
+    )
+    CONTROLS["nectar_drop_rate"] = cmds.intSliderGrp(
+        label="Nectar Drop Rate", field=True, minValue=0, maxValue=12,
+        fieldMinValue=0, fieldMaxValue=30, value=drop_defaults["nectar_drop_rate"],
+    )
+    CONTROLS["pollen_drop_rate"] = cmds.intSliderGrp(
+        label="Pollen Drop Rate", field=True, minValue=0, maxValue=12,
+        fieldMinValue=0, fieldMaxValue=30, value=drop_defaults["pollen_drop_rate"],
+    )
+    cmds.setParent("..")
+
+    cmds.frameLayout(label="Wind and Bees", collapsable=True, marginWidth=8, marginHeight=8)
+    CONTROLS["wind_strength"] = cmds.floatSliderGrp(
+        label="Wind Strength", field=True, minValue=0.0, maxValue=4.0,
+        fieldMinValue=0.0, fieldMaxValue=10.0,
+        value=drop_defaults["wind_strength"], precision=2,
+    )
+    CONTROLS["wind_direction"] = cmds.floatSliderGrp(
+        label="Wind Direction", field=True, minValue=0.0, maxValue=360.0,
+        fieldMinValue=0.0, fieldMaxValue=360.0,
+        value=drop_defaults["wind_direction_degrees"], precision=1,
+    )
+    CONTROLS["bee_count"] = cmds.intSliderGrp(
+        label="Bee Count", field=True, minValue=1, maxValue=12,
+        fieldMinValue=1, fieldMaxValue=40, value=bee_defaults["bee_count"],
+    )
+    CONTROLS["animation_end"] = cmds.intSliderGrp(
+        label="Animation Frames", field=True, minValue=160, maxValue=600,
+        value=visual_defaults.get("animation_end", 320),
+    )
+    CONTROLS["drop_fall_frames"] = cmds.intSliderGrp(
+        label="Drop Fall Frames", field=True, minValue=24, maxValue=140,
+        value=visual_defaults.get("drop_fall_frames", 64),
+    )
+    CONTROLS["bee_frame_step"] = cmds.intSliderGrp(
+        label="Bee Speed (Frames)", field=True, minValue=8, maxValue=50,
+        value=visual_defaults.get("bee_frame_step", 22),
+    )
+    CONTROLS["show_paths"] = cmds.checkBox(
+        label="Show Paths",
+        value=visual_defaults.get("show_paths", True),
+    )
+    cmds.setParent("..")
+
+    cmds.button(label="Generate Scene", height=38, command=generate_from_ui)
+    cmds.button(label="Clear Scene", height=32, command=clear_scene_from_ui)
+    cmds.button(label="Run Pure Python Summary", height=32, command=run_pure_python_summary)
+    cmds.button(label="Next Simulation Step", height=32, command=next_simulation_step)
+
+    cmds.rowLayout(numberOfColumns=3, adjustableColumn=1, columnWidth3=(135, 135, 135))
+    cmds.button(label="Play", command=play_animation)
+    cmds.button(label="Pause", command=pause_animation)
+    cmds.button(label="Reset", command=reset_animation)
+    cmds.setParent("..")
+
+    CONTROLS["status"] = cmds.text(
+        label="Adjust parameters, then generate.", align="left", height=40,
+    )
+
     cmds.showWindow(window)
+    _update_status(cmds)
     return window
-
-
-def build_config_from_ui(controls):
-    """Build an integration config dictionary from Maya UI controls.
-
-    Parameters:
-        controls (dict): Maya control names created by create_cloud_hive_ui().
-
-    Returns:
-        dict: Configuration dictionary for main.run_simulation() or create_maya_scene().
-    """
-    import maya.cmds as cmds
-
-    config = _copy_default_config()
-    hive = config["hive"]
-    clouds = config["clouds"]
-    drops = config["drops"]
-    bees = config["bees"]
-    visual = config.setdefault("visual", {})
-
-    hive["size"] = cmds.intSliderGrp(controls["hive_size"], query=True, value=True)
-    hive["cell_size"] = cmds.floatSliderGrp(controls["cell_size"], query=True, value=True)
-
-    honey_ratio = cmds.floatSliderGrp(controls["honey_ratio"], query=True, value=True)
-    pollen_ratio = cmds.floatSliderGrp(controls["pollen_ratio"], query=True, value=True)
-    capped_ratio = cmds.floatSliderGrp(controls["capped_ratio"], query=True, value=True)
-    empty_ratio = max(0.0, 1.0 - honey_ratio - pollen_ratio - capped_ratio)
-
-    hive["honey_ratio"] = honey_ratio
-    hive["pollen_ratio"] = pollen_ratio
-    hive["capped_ratio"] = capped_ratio
-    hive["empty_ratio"] = empty_ratio
-
-    clouds["cloud_count"] = cmds.intSliderGrp(controls["cloud_count"], query=True, value=True)
-    drops["nectar_drop_rate"] = cmds.intSliderGrp(
-        controls["nectar_drop_rate"],
-        query=True,
-        value=True,
-    )
-    drops["pollen_drop_rate"] = cmds.intSliderGrp(
-        controls["pollen_drop_rate"],
-        query=True,
-        value=True,
-    )
-    drops["wind_strength"] = cmds.floatSliderGrp(
-        controls["wind_strength"],
-        query=True,
-        value=True,
-    )
-    drops["wind_direction_degrees"] = cmds.floatSliderGrp(
-        controls["wind_direction"],
-        query=True,
-        value=True,
-    )
-
-    bees["bee_count"] = cmds.intSliderGrp(controls["bee_count"], query=True, value=True)
-    visual["show_paths"] = cmds.checkBox(controls["show_paths"], query=True, value=True)
-    return config
-
-
-def _copy_default_config():
-    """Create a plain nested copy of DEFAULT_INTEGRATION_PARAMETERS.
-
-    Returns:
-        dict: Mutable copy of the default integration parameters.
-    """
-    copied = {}
-    for section_name, section_values in DEFAULT_INTEGRATION_PARAMETERS.items():
-        copied[section_name] = {}
-        for key, value in section_values.items():
-            if isinstance(value, list):
-                copied[section_name][key] = list(value)
-            else:
-                copied[section_name][key] = value
-    copied.setdefault("visual", {})
-    return copied
-
-
-def _on_generate_scene(controls):
-    """Generate the Maya scene from current UI parameters.
-
-    Parameters:
-        controls (dict): Maya control names.
-
-    Returns:
-        None.
-    """
-    config = build_config_from_ui(controls)
-    scene_data = create_maya_scene(config)
-    print("Generated Cloud-Hive scene from UI.")
-    print_summary(scene_data)
-
-
-def _on_clear_scene():
-    """Clear generated Cloud-Hive Meadow objects from the Maya scene.
-
-    Parameters:
-        None.
-
-    Returns:
-        None.
-    """
-    clear_scene()
-    print("Cleared Cloud-Hive Meadow scene objects.")
-
-
-def _on_run_summary(controls):
-    """Run the pure Python simulation and print its summary.
-
-    Parameters:
-        controls (dict): Maya control names.
-
-    Returns:
-        None.
-    """
-    config = build_config_from_ui(controls)
-    simulation = run_simulation(config)
-    print_summary(simulation)
