@@ -137,6 +137,35 @@ Integration notes:
 - `main.py` must not import `maya.cmds`.
 - Maya geometry and animation remain in module-specific Maya-only helper functions for later Autodesk Maya testing.
 
+### Maya Visualization Layer
+
+Responsibilities:
+
+- Build the first visible Cloud-Hive Meadow scene in Autodesk Maya.
+- Reuse the pure Python integration flow to get cells, clouds, drops, tasks, paths, and bees.
+- Call module-specific Maya helper functions for honeycomb geometry, cloud geometry, flower geometry, drop markers, bee geometry, and task path visuals.
+- Add simple ground, camera, light, and optional text labels for a presentable MVP scene.
+
+Planned module: `code/visual_module.py`
+
+Current Maya-only interface:
+
+- `create_maya_scene(config)`: runs the pure Python data flow and creates the Maya scene.
+- `clear_scene()`: removes previous generated Cloud-Hive Meadow objects.
+- `setup_camera_and_lighting(scene_radius)`: creates a camera, directional light, and ambient light.
+- `create_ground_plane(scene_radius)`: creates a simple green ground plane.
+- `create_scene_labels_optional(summary)`: creates optional summary labels in Maya.
+
+Maya entry script:
+
+- `maya_scripts/cloud_hive_meadow.py` adds the project `code/` directory to `sys.path`, imports `create_maya_scene`, runs it, and prints a success message.
+
+Integration notes:
+
+- The Maya visualization layer is intentionally separate from the pure Python logic.
+- `visual_module.py` and the Maya entry script do not import `maya.cmds` at top level.
+- Maya-specific functions import `maya.cmds` inside function bodies and should be tested later inside Autodesk Maya.
+
 ## Data Interfaces
 
 The MVP should use simple Python data structures first, then move to dataclasses if needed.

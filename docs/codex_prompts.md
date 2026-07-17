@@ -153,3 +153,18 @@ Implemented:
 - Added `code/main.py` to generate the hive, clouds, drops, mapped cells, tasks, BFS paths, bees, and completed reachable transport tasks.
 - Added readable integration summary output for cell counts, drop counts, task summaries, BFS path counts, and an example path.
 - Documented the main integration script interface in `docs/system_design.md`.
+
+## Development Prompt 6
+
+```text
+Implement the first Maya visualization MVP for Cloud-Hive Meadow.
+Update local main, create feature/maya-visualization-mvp, add create_maya_scene() in visual_module.py, call existing Maya helper functions, add camera/light/ground/labels, update the Maya entry script, and keep pure Python files compilable outside Maya.
+```
+
+Implemented:
+
+- Added `code/visual_module.py` as the Maya visualization layer for the MVP scene.
+- Added `create_maya_scene(config=None)` to run the pure Python data flow and call existing Maya helper functions for honeycomb cells, clouds, flowers, drops, bees, and task path visuals.
+- Added helper functions for clearing generated scene groups, creating a ground plane, setting up camera/lighting, and creating optional labels.
+- Replaced `maya_scripts/cloud_hive_meadow.py` with a lightweight Maya entry script that adds the project `code/` folder to `sys.path`, imports `create_maya_scene`, runs it, and prints a success message.
+- Documented that Maya visualization is separated from pure Python logic and that `maya.cmds` imports happen inside Maya-specific functions.
