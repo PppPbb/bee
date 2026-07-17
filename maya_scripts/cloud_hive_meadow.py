@@ -4,6 +4,10 @@ Cloud-Hive Meadow Maya entry script.
 Run inside Maya Script Editor:
 
 exec(open(r"/path/to/bee/maya_scripts/cloud_hive_meadow.py").read())
+
+Optional UI:
+
+open_ui()
 """
 
 import os
@@ -62,6 +66,23 @@ def run():
     scene_data = create_maya_scene()
     print("Cloud-Hive Meadow Maya scene created successfully.")
     return scene_data
+
+
+def open_ui():
+    """Open the Cloud-Hive Meadow Maya control panel.
+
+    Returns:
+        str: Maya window name.
+    """
+    code_dir = _find_project_code_dir()
+    if code_dir not in sys.path:
+        sys.path.insert(0, code_dir)
+
+    from ui_module import create_cloud_hive_ui
+
+    window = create_cloud_hive_ui()
+    print("Cloud-Hive Meadow UI opened.")
+    return window
 
 
 if __name__ == "__main__":

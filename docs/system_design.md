@@ -166,6 +166,29 @@ Integration notes:
 - `visual_module.py` and the Maya entry script do not import `maya.cmds` at top level.
 - Maya-specific functions import `maya.cmds` inside function bodies and should be tested later inside Autodesk Maya.
 
+### Maya UI Module
+
+Responsibilities:
+
+- Provide a simple Maya control panel for the MVP scene.
+- Expose core generation parameters such as honeycomb size, ratios, cloud count, drop rates, wind settings, bee count, and path visibility.
+- Generate a Maya scene by building a config dictionary and calling `visual_module.create_maya_scene(config)`.
+- Clear generated scene objects through `visual_module.clear_scene()`.
+- Run the pure Python summary through `main.run_simulation(config)` and print the result to the Script Editor.
+
+Planned module: `code/ui_module.py`
+
+Current Maya-only interface:
+
+- `create_cloud_hive_ui()`: creates the Cloud-Hive Control Panel window.
+- `build_config_from_ui(controls)`: reads Maya UI values and builds an integration config dictionary.
+
+Integration notes:
+
+- `ui_module.py` imports no Maya APIs at top level.
+- Maya UI commands import `maya.cmds` inside function bodies.
+- The Maya entry script exposes `open_ui()` as an optional way to launch the control panel.
+
 ## Data Interfaces
 
 The MVP should use simple Python data structures first, then move to dataclasses if needed.
