@@ -108,3 +108,19 @@ Implemented:
 - Added cell lookup helpers, neighbor calculation, deterministic cell type assignment, nearest-storage lookup, and BFS pathfinding.
 - Added Maya-only honeycomb prism geometry creation and BFS path highlighting helpers.
 - Documented the hive module interface in `docs/system_design.md`.
+
+## Development Prompt 3
+
+```text
+Implement the second core module, code/cloud_resource_module.py, for the cloud resource system.
+Keep pure Python logic testable outside Maya, import maya.cmds only inside Maya-specific functions, generate cloud/drop data, apply wind offset, map drops to nearest honeycomb cells, and add a pure Python self-test.
+```
+
+Implemented:
+
+- Added deterministic cloud data generation with resource amounts and cloud emission points.
+- Added wind-influenced nectar and pollen drop generation with concentrated nectar and more scattered pollen.
+- Added XZ-plane distance and nearest-cell mapping helpers for honeycomb cells.
+- Added mapping summary output for resource drops.
+- Added Maya-only cloud geometry, flower geometry, and drop marker helpers.
+- Documented the cloud resource module interface in `docs/system_design.md`.

@@ -59,6 +59,22 @@ Responsibilities:
 
 Planned module: `code/cloud_resource_module.py`
 
+Current pure Python interface:
+
+- `create_cloud_data(...)`: creates deterministic cloud dictionaries with resource amounts and emission points.
+- `apply_wind_offset(position, wind_strength, wind_direction_degrees)`: shifts positions horizontally on the XZ plane.
+- `generate_resource_drops(...)`: creates nectar and pollen drop records with wind-influenced landing positions.
+- `distance_2d(pos_a, pos_b)`: measures XZ-plane distance.
+- `find_nearest_cell_for_drop(drop, cells)`: maps one drop to the closest honeycomb cell.
+- `map_drops_to_cells(drops, cells)`: maps every drop to the honeycomb grid.
+- `summarize_drop_mapping(drops)`: reports total, nectar, pollen, and mapped drop counts.
+
+Current Maya-only interface:
+
+- `create_cloud_geometry(clouds, cloud_scale)`: creates stylized sphere-cluster cloud objects.
+- `create_flower_geometry_on_clouds(clouds, flowers_per_cloud)`: creates simple flowers on top of clouds.
+- `create_drop_particles(drops)`: creates nectar and pollen drop markers in Maya.
+
 ### Bee Task And Animation System
 
 Responsibilities:
