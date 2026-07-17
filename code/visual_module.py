@@ -58,6 +58,7 @@ def create_maya_scene(config=None, prior_cell_state=None):
     cloud_scale = visual_params.get("cloud_scale", 0.85)
     flowers_per_cloud = visual_params.get("flowers_per_cloud", 5)
     bee_scale = visual_params.get("bee_scale", 1.0)
+    show_paths = visual_params.get("show_paths", True)
     create_honeycomb_geometry(cells, hive_params["cell_size"], cell_depth)
     create_cloud_geometry(clouds, cloud_scale=cloud_scale)
     create_flower_geometry_on_clouds(clouds, flowers_per_cloud=flowers_per_cloud)
@@ -79,7 +80,8 @@ def create_maya_scene(config=None, prior_cell_state=None):
         fall_duration=drop_fall_frames,
     )
     create_bee_geometry(bees, bee_scale=bee_scale)
-    create_task_path_visuals(tasks, cells)
+    if show_paths:
+        create_task_path_visuals(tasks, cells)
     animation_records = animate_assigned_bees(
         bees,
         tasks,

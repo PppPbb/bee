@@ -4,11 +4,18 @@ Cloud-Hive Meadow Maya entry script.
 Run inside Maya Script Editor:
 
 exec(open(r"/path/to/bee/maya_scripts/cloud_hive_meadow.py").read())
+
+Default behavior:
+    run() opens the control panel and generates one scene from UI defaults.
+
+Alternatives:
+    run(open_control_panel=False) generates a scene without opening the UI.
+    open_ui() opens only the Cloud-Hive Control Panel.
 """
 
+import importlib
 import os
 import sys
-import importlib
 
 
 def _find_project_code_dir():
@@ -53,25 +60,56 @@ def _find_project_code_dir():
     )
 
 
-def run():
-    """Run the Cloud-Hive Meadow Maya visualization MVP.
-
-    Returns:
-        dict: Scene data returned by visual_module.create_maya_scene().
-    """
+def _prepare_project_modules():
+    """Add project code to sys.path and reload project modules for Maya."""
     code_dir = _find_project_code_dir()
     if code_dir not in sys.path:
         sys.path.insert(0, code_dir)
     print("Cloud-Hive Meadow code directory:", code_dir)
-
     _reload_project_modules()
+    return code_dir
 
-    from ui_module import generate_from_ui, show_ui
 
-    show_ui()
-    scene_data = generate_from_ui()
+def run(open_control_panel=True):
+    """Run the Cloud-Hive Meadow Maya visualization.
+
+    Parameters:
+        open_control_panel (bool): When True, open the UI and generate from the
+            UI defaults. When False, call visual_module.create_maya_scene()
+            directly.
+
+    Returns:
+        dict: Scene data returned by visual_module.create_maya_scene().
+    """
+    _prepare_project_modules()
+
+    if open_control_panel:
+        from ui_module import generate_from_ui, show_ui
+
+        show_ui()
+        scene_data = generate_from_ui()
+    else:
+        from visual_module import create_maya_scene
+
+        scene_data = create_maya_scene()
+
     print("Cloud-Hive Meadow Maya scene created successfully.")
     return scene_data
+
+
+def open_ui():
+    """Open the Cloud-Hive Meadow Maya control panel without generating a scene.
+
+    Returns:
+        str: Maya window name.
+    """
+    _prepare_project_modules()
+
+    from ui_module import create_cloud_hive_ui
+
+    window = create_cloud_hive_ui()
+    print("Cloud-Hive Meadow UI opened.")
+    return window
 
 
 def _reload_project_modules():

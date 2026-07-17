@@ -168,3 +168,19 @@ Implemented:
 - Added helper functions for clearing generated scene groups, creating a ground plane, setting up camera/lighting, and creating optional labels.
 - Replaced `maya_scripts/cloud_hive_meadow.py` with a lightweight Maya entry script that adds the project `code/` folder to `sys.path`, imports `create_maya_scene`, runs it, and prints a success message.
 - Documented that Maya visualization is separated from pure Python logic and that `maya.cmds` imports happen inside Maya-specific functions.
+
+## Development Prompt 7
+
+```text
+Implement the first Maya UI MVP for Cloud-Hive Meadow.
+Update local main, create feature/maya-ui-mvp, add create_cloud_hive_ui() in ui_module.py, expose controls for core scene parameters, wire Generate Scene, Clear Scene, and Run Pure Python Summary buttons, update the Maya entry script, and keep non-Maya checks passing.
+```
+
+Implemented:
+
+- Added `code/ui_module.py` with a Maya-only Cloud-Hive Control Panel.
+- Added UI controls for honeycomb size, cell size, cell ratios, cloud count, drop rates, wind settings, bee count, and path visibility.
+- Wired Generate Scene to `visual_module.create_maya_scene(config)`, Clear Scene to `visual_module.clear_scene()`, and Run Pure Python Summary to `main.run_simulation(config)`.
+- Added visual defaults in `code/config.py` and made `visual_module.create_maya_scene()` respect the Show Paths setting.
+- Added optional `open_ui()` support to `maya_scripts/cloud_hive_meadow.py`.
+- Documented the UI module role and Maya/Pure Python separation in `docs/system_design.md`.
