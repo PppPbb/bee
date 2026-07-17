@@ -1,9 +1,11 @@
 """Maya visualization layer for the Cloud-Hive Meadow MVP."""
 
+import math
+import random
+
 from bee_task_module import create_bee_geometry, create_task_path_visuals
 from cloud_resource_module import (
     create_cloud_geometry,
-    create_drop_particles,
     create_flower_geometry_on_clouds,
 )
 from hive_module import create_honeycomb_geometry
@@ -52,16 +54,13 @@ def create_maya_scene(config=None):
     cloud_scale = visual_params.get("cloud_scale", 0.85)
     flowers_per_cloud = visual_params.get("flowers_per_cloud", 5)
     bee_scale = visual_params.get("bee_scale", 1.0)
-
-    create_ground_plane(ground_radius)
     create_honeycomb_geometry(cells, hive_params["cell_size"], cell_depth)
     create_cloud_geometry(clouds, cloud_scale=cloud_scale)
     create_flower_geometry_on_clouds(clouds, flowers_per_cloud=flowers_per_cloud)
-    create_drop_particles(drops)
+    create_falling_resource_effects(drops, clouds)
     create_bee_geometry(bees, bee_scale=bee_scale)
     create_task_path_visuals(tasks, cells)
     setup_camera_and_lighting(ground_radius)
-    create_scene_labels_optional(simulation["summary"])
     _parent_known_scene_groups()
 
     print("Cloud-Hive Meadow Maya visualization created.")
@@ -104,6 +103,9 @@ def clear_scene():
         "CloudHive_Bees_GRP",
         "CloudHive_BeeTaskPaths_GRP",
         "CloudHive_Ground_GRP",
+        "CloudHive_MeadowDetails_GRP",
+        "CloudHive_BeehiveBoxes_GRP",
+        "CloudHive_FallingResources_GRP",
         "CloudHive_CameraLight_GRP",
         "CloudHive_Labels_GRP",
         "CloudHiveMeadow_GRP",
@@ -140,13 +142,15 @@ def setup_camera_and_lighting(scene_radius=9.0):
     cmds.setAttr(camera_shape + ".focalLength", 35)
     cmds.parent(camera_transform, group_name)
 
-    sun_shape = cmds.directionalLight(name="CloudHive_Sun_LGT", intensity=1.15)
+    sun_shape = cmds.directionalLight(name="CloudHive_Sun_LGT", intensity=1.28)
     sun_light = cmds.listRelatives(sun_shape, parent=True)[0]
     cmds.xform(sun_light, rotation=(-45.0, -30.0, 0.0), worldSpace=True)
+    cmds.setAttr(sun_shape + ".color", 1.0, 0.78, 0.48, type="double3")
     cmds.parent(sun_light, group_name)
 
-    ambient_shape = cmds.ambientLight(name="CloudHive_Ambient_LGT", intensity=0.35)
+    ambient_shape = cmds.ambientLight(name="CloudHive_Ambient_LGT", intensity=0.42)
     ambient_light = cmds.listRelatives(ambient_shape, parent=True)[0]
+    cmds.setAttr(ambient_shape + ".color", 0.72, 0.74, 1.0, type="double3")
     cmds.parent(ambient_light, group_name)
 
     try:
@@ -193,6 +197,288 @@ def create_ground_plane(scene_radius=9.0):
     material = _create_maya_material(cmds, "chm_visual_ground_green_MAT", (0.24, 0.46, 0.26))
     _assign_maya_material(cmds, ground, material)
     return ground
+
+
+def create_falling_resource_effects(drops, clouds, start_frame=1, end_frame=160):
+    """Create animated nectar and pollen falling from clouds to the honeycomb.
+
+    Parameters:
+        drops (list[dict]): Resource drops from cloud_resource_module.
+        clouds (list[dict]): Cloud dictionaries with source positions.
+        start_frame (int): First animation frame.
+        end_frame (int): Last animation frame.
+
+    Returns:
+        list[str]: Created Maya object names.
+    """
+    import maya.cmds as cmds
+
+    group_name = "CloudHive_FallingResources_GRP"
+    if cmds.objExists(group_name):
+        cmds.delete(group_name)
+    cmds.group(empty=True, name=group_name)
+
+    cloud_by_id = {cloud["id"]: cloud for cloud in clouds}
+    nectar_material = _create_maya_material(cmds, "chm_pixel_nectar_MAT", (1.0, 0.62, 0.02))
+    pollen_material = _create_maya_material(cmds, "chm_pixel_pollen_MAT", (1.0, 0.42, 0.05))
+    streak_material = _create_maya_material(cmds, "chm_pixel_nectar_streak_MAT", (1.0, 0.78, 0.12))
+
+    created = []
+    frame_span = max(1, int(end_frame) - int(start_frame))
+    for index, drop in enumerate(drops):
+        cloud = cloud_by_id.get(drop.get("source_cloud"))
+        if cloud is None:
+            continue
+
+        resource_type = drop.get("resource_type", "nectar")
+        cloud_x, cloud_y, cloud_z = cloud["position"]
+        end_x, end_y, end_z = drop["position"]
+        local_start = int(start_frame) + (index * 7) % max(1, frame_span - 28)
+        local_end = min(int(end_frame), local_start + 24 + (index % 12))
+
+        jitter = 0.55 if resource_type == "nectar" else 0.95
+        start_x = cloud_x + math.sin(index * 1.7) * jitter
+        start_y = cloud_y - 0.55
+        start_z = cloud_z + math.cos(index * 1.3) * jitter
+        size = 0.13 if resource_type == "nectar" else 0.09
+
+        particle, _shape = cmds.polyCube(
+            width=size,
+            height=size * (1.55 if resource_type == "nectar" else 1.0),
+            depth=size,
+            name="CloudHive_{0}_falling_{1:03d}".format(resource_type, index),
+        )
+        cmds.xform(particle, translation=(start_x, start_y, start_z), worldSpace=True)
+        cmds.parent(particle, group_name)
+        _assign_maya_material(cmds, particle, nectar_material if resource_type == "nectar" else pollen_material)
+
+        if local_start > int(start_frame):
+            cmds.setKeyframe(particle, attribute="visibility", time=local_start - 1, value=0)
+        cmds.setKeyframe(particle, attribute="visibility", time=local_start, value=1)
+        cmds.setKeyframe(particle, attribute="translateX", time=local_start, value=start_x)
+        cmds.setKeyframe(particle, attribute="translateY", time=local_start, value=start_y)
+        cmds.setKeyframe(particle, attribute="translateZ", time=local_start, value=start_z)
+        cmds.setKeyframe(particle, attribute="translateX", time=local_end, value=end_x)
+        cmds.setKeyframe(particle, attribute="translateY", time=local_end, value=end_y + 0.35)
+        cmds.setKeyframe(particle, attribute="translateZ", time=local_end, value=end_z)
+        cmds.setKeyframe(particle, attribute="visibility", time=local_end, value=1)
+        cmds.setKeyframe(particle, attribute="visibility", time=min(int(end_frame), local_end + 2), value=0)
+        created.append(particle)
+
+        if resource_type == "nectar":
+            streak = cmds.curve(
+                degree=1,
+                point=[
+                    (start_x, start_y, start_z),
+                    ((start_x + end_x) * 0.5, (start_y + end_y) * 0.5, (start_z + end_z) * 0.5),
+                    (end_x, end_y + 0.35, end_z),
+                ],
+                name="CloudHive_nectar_fall_streak_{0:03d}".format(index),
+            )
+            shape = cmds.listRelatives(streak, shapes=True)[0]
+            cmds.setAttr(shape + ".lineWidth", 2)
+            cmds.parent(streak, group_name)
+            _assign_maya_material(cmds, streak, streak_material)
+            if local_start > int(start_frame):
+                cmds.setKeyframe(streak, attribute="visibility", time=local_start - 1, value=0)
+            cmds.setKeyframe(streak, attribute="visibility", time=local_start, value=1)
+            cmds.setKeyframe(streak, attribute="visibility", time=local_end, value=1)
+            cmds.setKeyframe(streak, attribute="visibility", time=min(int(end_frame), local_end + 2), value=0)
+            created.append(streak)
+
+    cmds.playbackOptions(minTime=start_frame, maxTime=end_frame)
+    return created
+
+
+def create_meadow_background(scene_radius=9.0, hive_radius=5.0, flower_count=70, grass_tuft_count=45, seed=77):
+    """Create simple meadow flowers and grass around the honeycomb.
+
+    Parameters:
+        scene_radius (float): Approximate scene radius.
+        hive_radius (float): Radius kept clear around the honeycomb.
+        flower_count (int): Number of small field flowers.
+        grass_tuft_count (int): Number of simple grass tufts.
+        seed (int): Random seed for stable placement.
+
+    Returns:
+        dict: Created group and object counts.
+    """
+    import maya.cmds as cmds
+
+    rng = random.Random(seed)
+    group_name = "CloudHive_MeadowDetails_GRP"
+    if cmds.objExists(group_name):
+        cmds.delete(group_name)
+    cmds.group(empty=True, name=group_name)
+
+    stem_material = _create_maya_material(cmds, "chm_meadow_stem_green_MAT", (0.12, 0.42, 0.16))
+    grass_material = _create_maya_material(cmds, "chm_meadow_grass_MAT", (0.18, 0.52, 0.2))
+    petal_materials = [
+        _create_maya_material(cmds, "chm_meadow_petal_white_MAT", (0.95, 0.92, 0.78)),
+        _create_maya_material(cmds, "chm_meadow_petal_pink_MAT", (1.0, 0.52, 0.72)),
+        _create_maya_material(cmds, "chm_meadow_petal_yellow_MAT", (1.0, 0.82, 0.18)),
+    ]
+    center_material = _create_maya_material(cmds, "chm_meadow_flower_center_MAT", (0.95, 0.55, 0.05))
+
+    for index in range(max(0, int(flower_count))):
+        x, z = _random_ring_position(rng, hive_radius, scene_radius * 0.92)
+        flower_group = cmds.group(empty=True, name="CloudHive_FieldFlower_{0:03d}_GRP".format(index))
+        cmds.parent(flower_group, group_name)
+
+        stem_height = rng.uniform(0.18, 0.42)
+        stem, _shape = cmds.polyCylinder(
+            radius=0.018,
+            height=stem_height,
+            subdivisionsX=6,
+            name="CloudHive_FieldFlower_{0:03d}_stem".format(index),
+        )
+        cmds.xform(stem, translation=(x, stem_height * 0.5, z), worldSpace=True)
+        cmds.parent(stem, flower_group)
+        _assign_maya_material(cmds, stem, stem_material)
+
+        center_y = stem_height + 0.035
+        center, _shape = cmds.polySphere(
+            radius=0.045,
+            name="CloudHive_FieldFlower_{0:03d}_center".format(index),
+        )
+        cmds.xform(center, translation=(x, center_y, z), worldSpace=True)
+        cmds.parent(center, flower_group)
+        _assign_maya_material(cmds, center, center_material)
+
+        petal_material = rng.choice(petal_materials)
+        petal_count = rng.choice([5, 6])
+        for petal_index in range(petal_count):
+            angle = math.tau * petal_index / petal_count
+            petal, _shape = cmds.polySphere(
+                radius=0.035,
+                name="CloudHive_FieldFlower_{0:03d}_petal_{1:02d}".format(index, petal_index),
+            )
+            cmds.scale(1.35, 0.45, 0.9, petal, relative=True)
+            cmds.xform(
+                petal,
+                translation=(x + math.cos(angle) * 0.07, center_y, z + math.sin(angle) * 0.07),
+                worldSpace=True,
+            )
+            cmds.parent(petal, flower_group)
+            _assign_maya_material(cmds, petal, petal_material)
+
+    for index in range(max(0, int(grass_tuft_count))):
+        x, z = _random_ring_position(rng, hive_radius * 0.85, scene_radius * 0.96)
+        tuft_group = cmds.group(empty=True, name="CloudHive_GrassTuft_{0:03d}_GRP".format(index))
+        cmds.parent(tuft_group, group_name)
+        blade_count = rng.randint(3, 6)
+        for blade_index in range(blade_count):
+            blade_height = rng.uniform(0.16, 0.34)
+            blade, _shape = cmds.polyCube(
+                width=0.025,
+                height=blade_height,
+                depth=0.025,
+                name="CloudHive_GrassTuft_{0:03d}_blade_{1:02d}".format(index, blade_index),
+            )
+            cmds.xform(
+                blade,
+                translation=(x + rng.uniform(-0.08, 0.08), blade_height * 0.5, z + rng.uniform(-0.08, 0.08)),
+                rotation=(0.0, rng.uniform(0.0, 180.0), rng.uniform(-18.0, 18.0)),
+                worldSpace=True,
+            )
+            cmds.parent(blade, tuft_group)
+            _assign_maya_material(cmds, blade, grass_material)
+
+    return {
+        "group": group_name,
+        "flower_count": max(0, int(flower_count)),
+        "grass_tuft_count": max(0, int(grass_tuft_count)),
+    }
+
+
+def create_beehive_box(scene_radius=9.0, box_count=2, seed=88):
+    """Create simple stylized beehive boxes near the edge of the meadow.
+
+    Parameters:
+        scene_radius (float): Approximate scene radius.
+        box_count (int): Number of beehive boxes.
+        seed (int): Random seed for stable placement.
+
+    Returns:
+        list[str]: Created beehive box group names.
+    """
+    import maya.cmds as cmds
+
+    rng = random.Random(seed)
+    group_name = "CloudHive_BeehiveBoxes_GRP"
+    if cmds.objExists(group_name):
+        cmds.delete(group_name)
+    cmds.group(empty=True, name=group_name)
+
+    wood_material = _create_maya_material(cmds, "chm_beehive_wood_MAT", (0.78, 0.56, 0.24))
+    roof_material = _create_maya_material(cmds, "chm_beehive_roof_MAT", (0.46, 0.28, 0.12))
+    entrance_material = _create_maya_material(cmds, "chm_beehive_entrance_MAT", (0.08, 0.05, 0.025))
+
+    created = []
+    for index in range(max(0, int(box_count))):
+        angle = (math.tau / max(1, int(box_count))) * index + rng.uniform(-0.35, 0.35)
+        radius = scene_radius * rng.uniform(0.62, 0.78)
+        x = math.cos(angle) * radius
+        z = math.sin(angle) * radius
+
+        hive_group = cmds.group(empty=True, name="CloudHive_BeehiveBox_{0:02d}_GRP".format(index))
+        cmds.parent(hive_group, group_name)
+        created.append(hive_group)
+
+        base, _shape = cmds.polyCube(
+            width=0.9,
+            height=0.55,
+            depth=0.65,
+            name="CloudHive_BeehiveBox_{0:02d}_base".format(index),
+        )
+        cmds.xform(base, translation=(x, 0.275, z), rotation=(0.0, -math.degrees(angle) + 90.0, 0.0), worldSpace=True)
+        cmds.parent(base, hive_group)
+        _assign_maya_material(cmds, base, wood_material)
+
+        roof, _shape = cmds.polyCube(
+            width=1.05,
+            height=0.12,
+            depth=0.78,
+            name="CloudHive_BeehiveBox_{0:02d}_roof".format(index),
+        )
+        cmds.xform(roof, translation=(x, 0.62, z), rotation=(0.0, -math.degrees(angle) + 90.0, 0.0), worldSpace=True)
+        cmds.parent(roof, hive_group)
+        _assign_maya_material(cmds, roof, roof_material)
+
+        entrance, _shape = cmds.polyCylinder(
+            radius=0.09,
+            height=0.035,
+            subdivisionsX=16,
+            name="CloudHive_BeehiveBox_{0:02d}_entrance".format(index),
+        )
+        front_x = x + math.cos(angle + math.pi) * 0.34
+        front_z = z + math.sin(angle + math.pi) * 0.34
+        cmds.xform(
+            entrance,
+            translation=(front_x, 0.31, front_z),
+            rotation=(90.0, 0.0, -math.degrees(angle)),
+            worldSpace=True,
+        )
+        cmds.parent(entrance, hive_group)
+        _assign_maya_material(cmds, entrance, entrance_material)
+
+        for stripe_index in range(2):
+            stripe, _shape = cmds.polyCube(
+                width=0.96,
+                height=0.035,
+                depth=0.68,
+                name="CloudHive_BeehiveBox_{0:02d}_stripe_{1:02d}".format(index, stripe_index),
+            )
+            cmds.xform(
+                stripe,
+                translation=(x, 0.22 + stripe_index * 0.18, z),
+                rotation=(0.0, -math.degrees(angle) + 90.0, 0.0),
+                worldSpace=True,
+            )
+            cmds.parent(stripe, hive_group)
+            _assign_maya_material(cmds, stripe, roof_material)
+
+    return created
 
 
 def create_scene_labels_optional(summary=None):
@@ -280,6 +566,15 @@ def _assign_maya_material(cmds, node, material):
     cmds.select(clear=True)
 
 
+def _random_ring_position(rng, inner_radius, outer_radius):
+    """Return a deterministic random XZ position between two radii."""
+    safe_inner = max(0.0, float(inner_radius))
+    safe_outer = max(safe_inner + 0.1, float(outer_radius))
+    angle = rng.uniform(0.0, math.tau)
+    radius = math.sqrt(rng.uniform(safe_inner * safe_inner, safe_outer * safe_outer))
+    return math.cos(angle) * radius, math.sin(angle) * radius
+
+
 def _parent_known_scene_groups():
     """Parent generated CloudHive groups under the visualization root group.
 
@@ -299,6 +594,8 @@ def _parent_known_scene_groups():
         "CloudHive_Clouds_GRP",
         "CloudHive_CloudFlowers_GRP",
         "CloudHive_ResourceDrops_GRP",
+        "CloudHive_MeadowDetails_GRP",
+        "CloudHive_BeehiveBoxes_GRP",
         "CloudHive_Bees_GRP",
         "CloudHive_BeeTaskPaths_GRP",
         "CloudHive_Ground_GRP",

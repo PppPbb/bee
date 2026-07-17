@@ -35,4 +35,12 @@ DEFAULT_INTEGRATION_PARAMETERS = {
     "tasks": {
         "max_tasks_to_complete": 3,
     },
+    "visual": {
+        "ground_radius": 9.0,
+        "cell_depth": 0.35,
+        "cloud_scale": 0.85,
+        "flowers_per_cloud": 7,
+        "bee_scale": 1.0,
+        "background_seed": 77,
+    },
 }

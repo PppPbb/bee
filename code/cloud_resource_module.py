@@ -364,13 +364,17 @@ def create_cloud_geometry(clouds, cloud_scale=1.0):
     if not cmds.objExists(root_group):
         cmds.group(empty=True, name=root_group)
 
-    cloud_material = _create_maya_material(cmds, "chm_cloud_soft_white_MAT", (0.88, 0.92, 0.96))
-    sphere_offsets = [
-        (0.0, 0.0, 0.0, 0.85),
-        (-0.55, 0.0, 0.05, 0.6),
-        (0.55, 0.0, 0.02, 0.65),
-        (-0.2, 0.25, -0.25, 0.55),
-        (0.3, 0.22, 0.25, 0.5),
+    cloud_material = _create_maya_material(cmds, "chm_pixel_cloud_cream_MAT", (0.96, 0.88, 0.76))
+    cloud_shadow_material = _create_maya_material(cmds, "chm_pixel_cloud_shadow_MAT", (0.84, 0.74, 0.68))
+    cube_offsets = [
+        (0.0, 0.0, 0.0, 0.9, 0.52, 0.62),
+        (-0.62, -0.04, 0.08, 0.58, 0.42, 0.48),
+        (0.62, -0.03, 0.02, 0.62, 0.46, 0.5),
+        (-0.24, 0.28, -0.24, 0.56, 0.46, 0.46),
+        (0.34, 0.24, 0.26, 0.52, 0.42, 0.42),
+        (-0.95, -0.12, 0.0, 0.36, 0.32, 0.34),
+        (0.95, -0.1, -0.05, 0.38, 0.32, 0.36),
+        (0.05, -0.28, 0.18, 0.72, 0.25, 0.48),
     ]
 
     for cloud in clouds:
@@ -378,14 +382,16 @@ def create_cloud_geometry(clouds, cloud_scale=1.0):
         cmds.parent(cloud_group, root_group)
         base_x, base_y, base_z = cloud["position"]
 
-        for index, (offset_x, offset_y, offset_z, radius) in enumerate(sphere_offsets):
-            sphere_name = "{0}_cloud_sphere_{1:02d}".format(cloud["id"], index)
-            sphere, _shape = cmds.polySphere(
-                radius=radius * cloud_scale,
-                name=sphere_name,
+        for index, (offset_x, offset_y, offset_z, width, height, depth) in enumerate(cube_offsets):
+            cube_name = "{0}_pixel_cloud_block_{1:02d}".format(cloud["id"], index)
+            cube, _shape = cmds.polyCube(
+                width=width * cloud_scale,
+                height=height * cloud_scale,
+                depth=depth * cloud_scale,
+                name=cube_name,
             )
             cmds.xform(
-                sphere,
+                cube,
                 translation=(
                     base_x + offset_x * cloud_scale,
                     base_y + offset_y * cloud_scale,
@@ -393,8 +399,8 @@ def create_cloud_geometry(clouds, cloud_scale=1.0):
                 ),
                 worldSpace=True,
             )
-            cmds.parent(sphere, cloud_group)
-            _assign_maya_material(cmds, sphere, cloud_material)
+            cmds.parent(cube, cloud_group)
+            _assign_maya_material(cmds, cube, cloud_shadow_material if offset_y < -0.2 else cloud_material)
 
         cloud["maya_object"] = cloud_group
 
@@ -424,13 +430,17 @@ def create_flower_geometry_on_clouds(clouds, flowers_per_cloud=5):
         cmds.group(empty=True, name=root_group)
 
     stem_material = _create_maya_material(cmds, "chm_flower_stem_green_MAT", (0.16, 0.48, 0.18))
-    petal_material = _create_maya_material(cmds, "chm_flower_petal_pink_MAT", (1.0, 0.48, 0.72))
+    petal_materials = [
+        _create_maya_material(cmds, "chm_flower_petal_pink_MAT", (1.0, 0.48, 0.72)),
+        _create_maya_material(cmds, "chm_flower_petal_peach_MAT", (1.0, 0.62, 0.42)),
+        _create_maya_material(cmds, "chm_flower_petal_cream_MAT", (1.0, 0.9, 0.72)),
+    ]
     center_material = _create_maya_material(cmds, "chm_flower_center_gold_MAT", (1.0, 0.72, 0.08))
 
     stem_height = 0.35
     petal_count = 5
-    petal_radius = 0.055
-    center_radius = 0.07
+    petal_size = 0.085
+    center_size = 0.09
 
     for cloud in clouds:
         cloud_group = cmds.group(empty=True, name="{0}_flowers_GRP".format(cloud["id"]))
@@ -444,10 +454,10 @@ def create_flower_geometry_on_clouds(clouds, flowers_per_cloud=5):
             flower_y = cloud["position"][1] + 0.45
             flower_z = point[2]
 
-            stem, _stem_shape = cmds.polyCylinder(
-                radius=0.025,
+            stem, _stem_shape = cmds.polyCube(
+                width=0.045,
                 height=stem_height,
-                subdivisionsX=8,
+                depth=0.045,
                 name="{0}_flower_{1:02d}_stem".format(cloud["id"], index),
             )
             cmds.xform(
@@ -459,19 +469,24 @@ def create_flower_geometry_on_clouds(clouds, flowers_per_cloud=5):
             _assign_maya_material(cmds, stem, stem_material)
 
             center_y = flower_y + stem_height
-            center, _center_shape = cmds.polySphere(
-                radius=center_radius,
+            center, _center_shape = cmds.polyCube(
+                width=center_size,
+                height=center_size,
+                depth=center_size,
                 name="{0}_flower_{1:02d}_center".format(cloud["id"], index),
             )
             cmds.xform(center, translation=(flower_x, center_y, flower_z), worldSpace=True)
             cmds.parent(center, cloud_group)
             _assign_maya_material(cmds, center, center_material)
 
+            petal_material = petal_materials[index % len(petal_materials)]
             for petal_index in range(petal_count):
                 petal_angle = math.tau * petal_index / petal_count
-                petal_offset = center_radius + petal_radius
-                petal, _petal_shape = cmds.polySphere(
-                    radius=petal_radius,
+                petal_offset = center_size * 0.9 + petal_size * 0.55
+                petal, _petal_shape = cmds.polyCube(
+                    width=petal_size,
+                    height=petal_size * 0.55,
+                    depth=petal_size,
                     name="{0}_flower_{1:02d}_petal_{2:02d}".format(
                         cloud["id"],
                         index,

@@ -8,6 +8,7 @@ exec(open(r"/path/to/bee/maya_scripts/cloud_hive_meadow.py").read())
 
 import os
 import sys
+import importlib
 
 
 def _find_project_code_dir():
@@ -22,8 +23,12 @@ def _find_project_code_dir():
     if script_file:
         candidate_roots.append(os.path.abspath(os.path.join(os.path.dirname(script_file), os.pardir)))
 
+    user_home = os.path.expanduser("~")
+    candidate_roots.append(os.path.join(user_home, "Desktop", "bee"))
+    candidate_roots.append(r"C:\Users\YUN\Desktop\bee")
     candidate_roots.append(os.getcwd())
     candidate_roots.append(os.path.abspath(os.path.join(os.getcwd(), os.pardir)))
+    candidate_roots.append(os.path.abspath(os.path.join(os.getcwd(), "bee")))
 
     for search_path in list(sys.path):
         if search_path:
@@ -43,6 +48,7 @@ def _find_project_code_dir():
 
     raise RuntimeError(
         "Could not find Cloud-Hive Meadow code directory. "
+        "Expected to find code/visual_module.py under C:\\Users\\YUN\\Desktop\\bee. "
         "Add the repository code folder to sys.path before running this script."
     )
 
@@ -56,12 +62,32 @@ def run():
     code_dir = _find_project_code_dir()
     if code_dir not in sys.path:
         sys.path.insert(0, code_dir)
+    print("Cloud-Hive Meadow code directory:", code_dir)
+
+    _reload_project_modules()
 
     from visual_module import create_maya_scene
 
     scene_data = create_maya_scene()
     print("Cloud-Hive Meadow Maya scene created successfully.")
     return scene_data
+
+
+def _reload_project_modules():
+    """Reload project modules so Maya does not keep stale imported code."""
+    module_names = [
+        "config",
+        "hive_module",
+        "cloud_resource_module",
+        "bee_task_module",
+        "main",
+        "visual_module",
+    ]
+    for module_name in module_names:
+        module = sys.modules.get(module_name)
+        if module is not None:
+            importlib.reload(module)
+            print("Reloaded", module_name)
 
 
 if __name__ == "__main__":
