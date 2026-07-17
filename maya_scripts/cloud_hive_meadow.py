@@ -66,9 +66,10 @@ def run():
 
     _reload_project_modules()
 
-    from visual_module import create_maya_scene
+    from ui_module import generate_from_ui, show_ui
 
-    scene_data = create_maya_scene()
+    show_ui()
+    scene_data = generate_from_ui()
     print("Cloud-Hive Meadow Maya scene created successfully.")
     return scene_data
 
@@ -82,6 +83,7 @@ def _reload_project_modules():
         "bee_task_module",
         "main",
         "visual_module",
+        "ui_module",
     ]
     for module_name in module_names:
         module = sys.modules.get(module_name)
