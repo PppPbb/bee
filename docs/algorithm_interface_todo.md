@@ -1,4 +1,8 @@
-# Cloud-Hive Meadow 算法端接口与待办文档
+# Cloud-Hive Bloomfield 算法端接口与待办文档
+
+英文题目：**Cloud-Hive Bloomfield: A Procedural Honeycomb Resource System in Maya**
+
+中文题目：**云上蜜源驱动的程序化蜂巢花田系统**
 
 本文档用于把当前 Maya 静态视觉原型升级为“可自己运作”的采集、判断、运输系统。目标是让算法端先实现可测试的纯 Python 状态逻辑，再由 Maya 视觉端读取状态并播放动画。
 

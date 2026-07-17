@@ -1,5 +1,9 @@
 # Task Plan
 
+Project title: **Cloud-Hive Bloomfield: A Procedural Honeycomb Resource System in Maya**
+
+中文题目：**云上蜜源驱动的程序化蜂巢花田系统**
+
 ## Three-Person Division Of Work
 
 ### Person 1: Honeycomb And Data Model
@@ -49,7 +53,7 @@
 ### Phase 3: Maya Scene Construction
 
 - Create honeycomb geometry.
-- Add cloud flowers and resource drops.
+- Add cloud flowers and nectar/pollen resource drops.
 - Add materials and visual states.
 - Draw path visualization.
 - Animate bees and resource transfers.
@@ -82,6 +86,7 @@
 - [ ] Maya cloud and resource visualization exists.
 - [ ] Bee animation exists.
 - [ ] Maya UI exists.
+- [ ] Final visual direction reads as a honeycomb flower-field system, not a ground grassland or beehive prop scene.
 - [ ] Final screenshots saved to `results/images/`.
 - [ ] Final video saved to `results/video/`.
 - [ ] Presentation materials saved to `presentation/`.

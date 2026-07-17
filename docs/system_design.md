@@ -2,7 +2,11 @@
 
 ## Overall Architecture
 
-Cloud-Hive Meadow is organized as a modular Maya Python project with a strict separation between pure Python simulation logic and Maya-specific scene construction.
+Cloud-Hive Bloomfield is organized as a modular Maya Python project with a strict separation between pure Python simulation logic and Maya-specific scene construction.
+
+Final English title: **Cloud-Hive Bloomfield: A Procedural Honeycomb Resource System in Maya**
+
+Final Chinese title: **云上蜜源驱动的程序化蜂巢花田系统**
 
 The pure Python layer owns data, rules, graph traversal, resource validation, and task decisions. These parts should run in a normal Python interpreter without Autodesk Maya.
 
@@ -141,24 +145,25 @@ Integration notes:
 
 Responsibilities:
 
-- Build the first visible Cloud-Hive Meadow scene in Autodesk Maya.
+- Build the first visible Cloud-Hive Bloomfield scene in Autodesk Maya.
 - Reuse the pure Python integration flow to get cells, clouds, drops, tasks, paths, and bees.
-- Call module-specific Maya helper functions for honeycomb geometry, cloud geometry, flower geometry, drop markers, bee geometry, and task path visuals.
-- Add simple ground, camera, light, and optional text labels for a presentable MVP scene.
+- Call module-specific Maya helper functions for honeycomb geometry, cloud geometry, cloud flower geometry, falling resource effects, bee geometry, task path visuals, resource state visuals, and blocked-task markers.
+- Add camera and light setup for a presentable honeycomb flower-field scene.
 
 Planned module: `code/visual_module.py`
 
 Current Maya-only interface:
 
-- `create_maya_scene(config)`: runs the pure Python data flow and creates the Maya scene.
-- `clear_scene()`: removes previous generated Cloud-Hive Meadow objects.
+- `create_maya_scene(config, prior_cell_state=None)`: runs the pure Python data flow and creates the Maya scene.
+- `clear_scene()`: removes previous generated Cloud-Hive Bloomfield objects.
 - `setup_camera_and_lighting(scene_radius)`: creates a camera, directional light, and ambient light.
-- `create_ground_plane(scene_radius)`: creates a simple green ground plane.
-- `create_scene_labels_optional(summary)`: creates optional summary labels in Maya.
+- `create_falling_resource_effects(drops, clouds, ...)`: creates animated cube drops and nectar streak curves.
+- `create_cell_resource_visuals(...)`: visualizes delivered nectar, pollen, and capped transitions.
+- `create_blocked_task_visuals(...)`: marks cells whose cleanup/transport tasks have no BFS path.
 
 Maya entry script:
 
-- `maya_scripts/cloud_hive_meadow.py` adds the project `code/` directory to `sys.path`, imports `create_maya_scene`, runs it, and prints a success message.
+- `maya_scripts/cloud_hive_meadow.py` keeps its historical filename, adds the project `code/` directory to `sys.path`, reloads project modules for Maya testing, and can either run `create_maya_scene()` directly or open the Maya UI.
 
 Integration notes:
 
@@ -170,7 +175,7 @@ Integration notes:
 
 Responsibilities:
 
-- Provide a simple Maya control panel for the MVP scene.
+- Provide a simple Maya control panel for the Bloomfield MVP scene.
 - Expose core generation parameters such as honeycomb size, ratios, cloud count, drop rates, wind settings, bee count, and path visibility.
 - Generate a Maya scene by building a config dictionary and calling `visual_module.create_maya_scene(config)`.
 - Clear generated scene objects through `visual_module.clear_scene()`.
@@ -218,7 +223,7 @@ Suggested module interfaces:
 - Create tasks for incorrect placement.
 - Use BFS to find a valid destination cell.
 - Show bee movement and resource transport.
-- Provide a simple Maya UI to regenerate or demonstrate the scene.
+- Provide a simple Maya UI to regenerate or demonstrate the honeycomb flower-field scene.
 - Produce screenshots, short video output, presentation slides, and a written report.
 
 ## Non-Goals

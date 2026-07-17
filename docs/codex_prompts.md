@@ -7,7 +7,7 @@ We are working in a local clone of the GitHub repository:
 
 https://github.com/PppPbb/bee
 
-This is a Maya Python course project called Cloud-Hive Meadow.
+This is a Maya Python course project called Cloud-Hive Bloomfield.
 
 Important context:
 I am currently not on a computer with Autodesk Maya installed, so please separate pure Python logic from Maya-specific functions. Pure Python logic should be testable outside Maya. Maya functions using maya.cmds should be clearly marked and will be tested later inside Autodesk Maya.
@@ -54,7 +54,7 @@ The current repository may already contain folders such as assets, docs, and may
 Create or update README.md.
 
 README.md should include:
-1. Project name: Cloud-Hive Meadow
+1. Project name: Cloud-Hive Bloomfield
 2. Goal: a stylized procedural honeycomb resource-management scene in Maya Python
 3. MVP features:
    - hexagonal honeycomb terrain
@@ -143,7 +143,7 @@ Implemented:
 ## Development Prompt 5
 
 ```text
-Implement code/main.py as the first pure Python end-to-end integration script for Cloud-Hive Meadow.
+Implement code/main.py as the first pure Python end-to-end integration script for Cloud-Hive Bloomfield.
 Update local main, create feature/main-integration, run the core loop outside Maya, load defaults from config.py if possible, print a clear summary, and update project documentation.
 ```
 
@@ -157,7 +157,7 @@ Implemented:
 ## Development Prompt 6
 
 ```text
-Implement the first Maya visualization MVP for Cloud-Hive Meadow.
+Implement the first Maya visualization MVP for Cloud-Hive Bloomfield.
 Update local main, create feature/maya-visualization-mvp, add create_maya_scene() in visual_module.py, call existing Maya helper functions, add camera/light/ground/labels, update the Maya entry script, and keep pure Python files compilable outside Maya.
 ```
 
@@ -172,7 +172,7 @@ Implemented:
 ## Development Prompt 7
 
 ```text
-Implement the first Maya UI MVP for Cloud-Hive Meadow.
+Implement the first Maya UI MVP for Cloud-Hive Bloomfield.
 Update local main, create feature/maya-ui-mvp, add create_cloud_hive_ui() in ui_module.py, expose controls for core scene parameters, wire Generate Scene, Clear Scene, and Run Pure Python Summary buttons, update the Maya entry script, and keep non-Maya checks passing.
 ```
 
@@ -184,3 +184,20 @@ Implemented:
 - Added visual defaults in `code/config.py` and made `visual_module.create_maya_scene()` respect the Show Paths setting.
 - Added optional `open_ui()` support to `maya_scripts/cloud_hive_meadow.py`.
 - Documented the UI module role and Maya/Pure Python separation in `docs/system_design.md`.
+
+## Development Prompt 8
+
+```text
+Rename the project concept to Cloud-Hive Bloomfield.
+Use the final English title "Cloud-Hive Bloomfield: A Procedural Honeycomb Resource System in Maya" and the final Chinese title "云上蜜源驱动的程序化蜂巢花田系统".
+Update documentation to describe a honeycomb flower-field system rather than a meadow, grassland, ground-flower, or beehive-prop scene.
+Do not rename Python files, directories, maya_scripts/cloud_hive_meadow.py, or function names.
+Do not change runtime behavior.
+```
+
+Implemented:
+
+- Updated project documentation to use Cloud-Hive Bloomfield as the final concept name.
+- Added the final English and Chinese titles to project-facing documentation.
+- Revised visual wording toward a honeycomb flower-field resource system.
+- Kept the existing `maya_scripts/cloud_hive_meadow.py` filename as a compatibility detail.

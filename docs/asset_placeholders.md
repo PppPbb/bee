@@ -1,5 +1,7 @@
 # Asset Placeholder Plan
 
+Project concept: **Cloud-Hive Bloomfield**, a honeycomb flower-field resource system.
+
 Use this file to track future model replacement.
 
 | Asset | Current Placeholder | Future Model Notes |
@@ -11,7 +13,7 @@ Use this file to track future model replacement.
 | Honey Cell | Hex column with honey material | Add wax rim and semi-transparent honey fill. |
 | Pollen Cell | Hex column with pollen material | Add orange particles inside the cell. |
 | Capped Cell | Short capped hex column | Add pale wax cap mesh. |
-| Central Hive | Wax mound and simple oval entrance | Replace with a refined hive entrance landmark. |
+| Honeycomb Field Accent | Simple procedural marker if needed | Keep decorative accents secondary to cloud flowers, honeycomb cells, drops, and bee paths. |
 
 Keep replacement assets near Maya scene scale:
 
