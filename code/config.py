@@ -33,7 +33,7 @@ DEFAULT_INTEGRATION_PARAMETERS = {
         "start_position": [0.0, 0.8, 0.0],
     },
     "tasks": {
-        "max_tasks_to_complete": 3,
+        "max_tasks_to_complete": 999,
     },
     "visual": {
         "ground_radius": 9.0,
@@ -42,5 +42,8 @@ DEFAULT_INTEGRATION_PARAMETERS = {
         "flowers_per_cloud": 7,
         "bee_scale": 1.0,
         "background_seed": 77,
+        "animation_end": 320,
+        "drop_fall_frames": 64,
+        "bee_frame_step": 22,
     },
 }

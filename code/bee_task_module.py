@@ -183,7 +183,13 @@ def select_task_for_bee(bee, tasks, cells):
     Returns:
         dict | None: Selected task dictionary, or None when no task is pending.
     """
-    pending_tasks = [task for task in tasks if task.get("status") == "pending"]
+    # A blocked-cell cleanup task has no traversable BFS path. Keep it in the
+    # data for reporting, but assign workers only tasks they can demonstrate.
+    pending_tasks = [
+        task
+        for task in tasks
+        if task.get("status") == "pending" and task.get("path")
+    ]
     if not pending_tasks:
         bee["current_task"] = None
         return None
@@ -264,6 +270,20 @@ def complete_task(task, cells):
         0.0,
         float(source_cell.get(resource_field, 0.0)) - deposited_amount,
     )
+
+    capacity = max(0.0, float(target_cell.get("capacity", 0.0)))
+    used_capacity = float(target_cell.get("nectar", 0.0)) + float(
+        target_cell.get("pollen", 0.0)
+    )
+    became_capped = capacity > 0.0 and used_capacity >= capacity - 0.000001
+    if became_capped:
+        target_cell["type"] = "capped"
+        target_cell["is_blocked"] = True
+        target_cell["became_capped"] = True
+
+    task["completed_amount"] = deposited_amount
+    task["target_cell"] = target_cell["id"]
+    task["became_capped"] = became_capped
 
     remaining_requested = max(0.0, requested_amount - deposited_amount)
     source_remaining = float(source_cell.get(resource_field, 0.0))
@@ -416,28 +436,29 @@ def create_bee_geometry(bees, bee_scale=1.0):
     stripe_material = _create_maya_material(cmds, "chm_bee_stripe_dark_MAT", (0.08, 0.06, 0.04))
     wing_material = _create_maya_material(cmds, "chm_bee_wing_blue_MAT", (0.62, 0.86, 1.0))
 
-    for bee in bees:
+    for bee_index, bee in enumerate(bees):
         bee_group = cmds.group(empty=True, name="{0}_GRP".format(bee["id"]))
         cmds.parent(bee_group, root_group)
         base_x, base_y, base_z = bee["position"]
+        base_x += (bee_index - (len(bees) - 1) * 0.5) * 0.55 * bee_scale
 
-        body, _body_shape = cmds.polySphere(
-            radius=0.25 * bee_scale,
+        body, _body_shape = cmds.polyCube(
+            width=0.52 * bee_scale,
+            height=0.28 * bee_scale,
+            depth=0.30 * bee_scale,
             name="{0}_body".format(bee["id"]),
         )
-        cmds.scale(1.45, 0.8, 0.8, body, relative=True)
         cmds.xform(body, translation=(base_x, base_y, base_z), worldSpace=True)
         cmds.parent(body, bee_group)
         _assign_maya_material(cmds, body, body_material)
 
         for stripe_index, offset_x in enumerate((-0.12, 0.12)):
-            stripe, _stripe_shape = cmds.polyCylinder(
-                radius=0.18 * bee_scale,
-                height=0.035 * bee_scale,
-                subdivisionsX=16,
+            stripe, _stripe_shape = cmds.polyCube(
+                width=0.055 * bee_scale,
+                height=0.295 * bee_scale,
+                depth=0.315 * bee_scale,
                 name="{0}_stripe_{1:02d}".format(bee["id"], stripe_index),
             )
-            cmds.rotate(0, 0, 90, stripe, relative=True, objectSpace=True)
             cmds.xform(
                 stripe,
                 translation=(base_x + offset_x * bee_scale, base_y, base_z),
@@ -447,11 +468,12 @@ def create_bee_geometry(bees, bee_scale=1.0):
             _assign_maya_material(cmds, stripe, stripe_material)
 
         for wing_index, offset_z in enumerate((-0.16, 0.16)):
-            wing, _wing_shape = cmds.polySphere(
-                radius=0.16 * bee_scale,
+            wing, _wing_shape = cmds.polyCube(
+                width=0.26 * bee_scale,
+                height=0.035 * bee_scale,
+                depth=0.20 * bee_scale,
                 name="{0}_wing_{1:02d}".format(bee["id"], wing_index),
             )
-            cmds.scale(1.2, 0.18, 0.75, wing, relative=True)
             cmds.xform(
                 wing,
                 translation=(base_x, base_y + 0.18 * bee_scale, base_z + offset_z * bee_scale),
@@ -463,6 +485,112 @@ def create_bee_geometry(bees, bee_scale=1.0):
         bee["maya_object"] = bee_group
 
     return bees
+
+
+def animate_bee_collection_cycle(
+    bee,
+    task,
+    cells,
+    clouds,
+    drops,
+    frame_start=1,
+    frame_step=10,
+    bee_index=0,
+):
+    """Animate one worker from the hive to a cloud, drop, and BFS target.
+
+    The task path remains the path calculated by hive_module.bfs_find_path.
+    Cloud and drop positions come directly from cloud_resource_module data.
+    """
+    import maya.cmds as cmds
+
+    bee_object = bee.get("maya_object")
+    path = task.get("path", []) if task else []
+    if not bee_object or not cmds.objExists(bee_object) or not path:
+        return []
+
+    drop_id = task.get("id", "")
+    if drop_id.startswith("task_"):
+        drop_id = drop_id[5:]
+    drop = next((item for item in drops if item.get("id") == drop_id), None)
+    if drop is None:
+        return animate_bee_on_path(bee, task, cells, frame_start, frame_step)
+
+    cloud = next(
+        (item for item in clouds if item.get("id") == drop.get("source_cloud")),
+        None,
+    )
+    cell_map = get_cell_map(cells)
+    source_cell = cell_map.get(task.get("source_cell"))
+    if cloud is None or source_cell is None:
+        return animate_bee_on_path(bee, task, cells, frame_start, frame_step)
+
+    offset = (bee_index - 1) * 0.55
+    start_x, start_y, start_z = bee.get("position", [0.0, 0.8, 0.0])
+    cloud_x, cloud_y, cloud_z = cloud["position"]
+    source_x, source_y, source_z = source_cell["position"]
+    idle_position = (start_x + offset, start_y, start_z)
+    waypoints = [
+        idle_position,
+        (cloud_x + offset * 0.35, cloud_y + 0.55, cloud_z),
+        (cloud_x + offset * 0.2, cloud_y - 0.25, cloud_z),
+        (source_x, source_y + 0.75, source_z),
+    ]
+
+    for cell_id in path[1:]:
+        cell = cell_map.get(cell_id)
+        if cell is not None:
+            x, y, z = cell["position"]
+            waypoints.append((x, y + 0.75, z))
+
+    delivery_waypoint_index = len(waypoints) - 1
+    waypoints.append(idle_position)
+
+    drop_start = int(drop.get("animation_start_frame", frame_start + frame_step))
+    drop_end = int(drop.get("animation_end_frame", drop_start + frame_step * 2))
+    waypoint_frames = [
+        max(int(frame_start), drop_start - int(frame_step)),
+        drop_start,
+        min(drop_end - 1, drop_start + 2),
+        drop_end,
+    ]
+    for index in range(max(0, len(waypoints) - 4)):
+        waypoint_frames.append(drop_end + (index + 1) * int(frame_step))
+
+    frames = []
+    for frame, position in zip(waypoint_frames, waypoints):
+        cmds.currentTime(frame)
+        cmds.xform(bee_object, translation=position, worldSpace=True)
+        cmds.setKeyframe(bee_object, attribute="translate", time=frame)
+        frames.append(frame)
+
+    resource_type = drop.get("resource_type", "nectar")
+    payload_material = _create_maya_material(
+        cmds,
+        "chm_bee_payload_{0}_MAT".format(resource_type),
+        (1.0, 0.62, 0.02) if resource_type == "nectar" else (1.0, 0.35, 0.08),
+    )
+    payload, _shape = cmds.polyCube(
+        width=0.13,
+        height=0.13,
+        depth=0.13,
+        name="{0}_{1}_payload".format(bee["id"], resource_type),
+    )
+    cmds.parent(payload, bee_object)
+    cmds.xform(payload, translation=(0.0, -0.25, 0.0), objectSpace=True)
+    _assign_maya_material(cmds, payload, payload_material)
+
+    pickup_frame = frames[2]
+    delivery_frame = frames[delivery_waypoint_index]
+    cmds.setKeyframe(payload, attribute="visibility", time=pickup_frame - 1, value=0)
+    cmds.setKeyframe(payload, attribute="visibility", time=pickup_frame, value=1)
+    cmds.setKeyframe(payload, attribute="visibility", time=delivery_frame, value=1)
+    cmds.setKeyframe(payload, attribute="visibility", time=delivery_frame + 1, value=0)
+
+    bee["animation_frames"] = frames
+    bee["resource_type"] = resource_type
+    task["delivery_frame"] = delivery_frame
+    return frames
 
 
 def animate_bee_on_path(bee, task, cells, frame_start=1, frame_step=12):

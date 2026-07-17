@@ -345,7 +345,8 @@ def create_honeycomb_geometry(cells, cell_size, cell_depth):
         cmds.xform(transform, translation=(x, cell_depth * 0.5, z), worldSpace=True)
         cmds.parent(transform, group_name)
 
-        material = material_by_type.get(cell.get("type"), material_by_type["empty"])
+        visual_type = cell.get("initial_type", cell.get("type"))
+        material = material_by_type.get(visual_type, material_by_type["empty"])
         _assign_maya_material(cmds, transform, material)
 
         cell["maya_object"] = transform
