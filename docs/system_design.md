@@ -87,6 +87,31 @@ Responsibilities:
 
 Planned module: `code/bee_task_module.py`
 
+Current pure Python interface:
+
+- `expected_cell_type_for_resource(resource_type)`: maps nectar to honey storage and pollen to pollen storage.
+- `validate_resource_cell(drop, cell)`: checks whether a mapped drop landed in a valid non-blocked storage cell.
+- `deposit_resource(drop, cell)`: adds nectar or pollen to a cell while respecting capacity.
+- `create_transport_task(drop, source_cell)`: creates transport or blocked-cleanup task dictionaries.
+- `create_tasks_from_drops(drops, cells)`: consumes mapped drops from `cloud_resource_module`, deposits valid drops, and creates tasks for invalid drops.
+- `create_bees(bee_count, start_position)`: creates bee dictionaries for assignment.
+- `select_task_for_bee(bee, tasks, cells)`: assigns the highest-priority pending task, using XZ distance as a tie-breaker.
+- `assign_paths_to_tasks(tasks, cells)`: calls `hive_module.bfs_find_path()` to attach shortest paths to tasks.
+- `complete_task(task, cells)`: moves stored resources from source cells to BFS target cells and marks completed tasks.
+- `summarize_tasks(tasks)`: reports task counts by status and task type.
+
+Current Maya-only interface:
+
+- `create_bee_geometry(bees, bee_scale)`: creates simple stylized bee objects in Maya.
+- `animate_bee_on_path(bee, task, cells, frame_start, frame_step)`: keyframes bee movement along a task path.
+- `create_task_path_visuals(tasks, cells)`: creates simple curve and marker path visuals for task paths.
+
+Integration notes:
+
+- `bee_task_module` expects drops to already have `mapped_cell_id` values from `cloud_resource_module.map_drops_to_cells()`.
+- `bee_task_module` uses honeycomb cells and BFS paths from `hive_module`.
+- Capped cells are treated as blocked; they create high-priority cleanup tasks and are not used as storage or BFS path cells.
+
 ## Data Interfaces
 
 The MVP should use simple Python data structures first, then move to dataclasses if needed.

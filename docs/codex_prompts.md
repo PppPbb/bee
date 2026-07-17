@@ -124,3 +124,18 @@ Implemented:
 - Added mapping summary output for resource drops.
 - Added Maya-only cloud geometry, flower geometry, and drop marker helpers.
 - Documented the cloud resource module interface in `docs/system_design.md`.
+
+## Development Prompt 4
+
+```text
+Implement the third core module, code/bee_task_module.py, for validating mapped resource drops, creating transport and cleanup tasks, assigning tasks to bees, calling hive_module BFS, completing resource transport, and adding Maya-only bee animation helpers.
+```
+
+Implemented:
+
+- Added resource-to-cell validation rules for nectar/honey and pollen/pollen storage.
+- Added capacity-aware resource deposit logic for honeycomb cells.
+- Added task creation for wrong drops, including high-priority cleanup tasks for capped or blocked cells.
+- Added bee dictionaries, task selection by priority and XZ distance, BFS path assignment through `hive_module.bfs_find_path()`, task completion, and task summaries.
+- Added Maya-only bee geometry, bee path animation, and task path visualization helpers.
+- Documented how `bee_task_module` connects mapped drops from `cloud_resource_module` with BFS paths from `hive_module`.
