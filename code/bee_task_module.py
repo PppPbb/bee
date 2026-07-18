@@ -657,8 +657,10 @@ def create_task_path_visuals(tasks, cells):
     if not cmds.objExists(root_group):
         cmds.group(empty=True, name=root_group)
 
-    path_material = _create_maya_material(cmds, "chm_task_path_cyan_MAT", (0.1, 0.85, 1.0))
+    path_material = _create_maya_material(cmds, "chm_task_path_cyan_MAT", (0.0, 0.95, 1.0))
     marker_material = _create_maya_material(cmds, "chm_task_marker_white_MAT", (0.92, 0.96, 1.0))
+    start_material = _create_maya_material(cmds, "chm_task_start_red_MAT", (1.0, 0.08, 0.04))
+    target_material = _create_maya_material(cmds, "chm_task_target_green_MAT", (0.08, 1.0, 0.28))
 
     for task in tasks:
         points = []
@@ -667,7 +669,7 @@ def create_task_path_visuals(tasks, cells):
             if cell is None:
                 continue
             x, y, z = cell["position"]
-            points.append((x, y + 0.35, z))
+            points.append((x, y + 1.05, z))
 
         if not points:
             continue
@@ -680,16 +682,29 @@ def create_task_path_visuals(tasks, cells):
             )
             cmds.parent(curve, root_group)
             _assign_maya_material(cmds, curve, path_material)
+            curve_shapes = cmds.listRelatives(curve, shapes=True) or []
+            for curve_shape in curve_shapes:
+                if cmds.attributeQuery("lineWidth", node=curve_shape, exists=True):
+                    cmds.setAttr(curve_shape + ".lineWidth", 5)
+                cmds.setAttr(curve_shape + ".overrideEnabled", 1)
+                cmds.setAttr(curve_shape + ".overrideRGBColors", 1)
+                cmds.setAttr(curve_shape + ".overrideColorRGB", 0.0, 0.95, 1.0)
             created_objects.append(curve)
 
         for index, point in enumerate(points):
             marker, _shape = cmds.polySphere(
-                radius=0.08,
+                radius=0.15,
                 name="{0}_path_marker_{1:02d}".format(task["id"], index),
             )
             cmds.xform(marker, translation=point, worldSpace=True)
             cmds.parent(marker, root_group)
-            _assign_maya_material(cmds, marker, marker_material)
+            if index == 0:
+                point_material = start_material
+            elif index == len(points) - 1:
+                point_material = target_material
+            else:
+                point_material = marker_material
+            _assign_maya_material(cmds, marker, point_material)
             created_objects.append(marker)
 
     return created_objects

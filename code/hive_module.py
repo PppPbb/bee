@@ -5,6 +5,16 @@ import random
 from collections import deque
 
 
+AXIAL_DIRECTIONS = (
+    (1, 0),
+    (-1, 0),
+    (0, 1),
+    (0, -1),
+    (1, -1),
+    (-1, 1),
+)
+
+
 def axial_to_world(q, r, cell_size):
     """Convert axial hex coordinates to a flat Maya/world position.
 
@@ -64,6 +74,8 @@ def generate_hex_grid(size, cell_size):
                     "capacity": 1.0,
                     "neighbors": [],
                     "is_blocked": False,
+                    "blocked_by_capacity": False,
+                    "queen_role": None,
                     "maya_object": None,
                 }
             )
@@ -109,21 +121,12 @@ def calculate_neighbors(cells):
         list[dict]: The same cells list with updated neighbor ids.
     """
     coordinate_to_id = {(cell["q"], cell["r"]): cell["id"] for cell in cells}
-    axial_neighbor_directions = [
-        (1, 0),
-        (-1, 0),
-        (0, 1),
-        (0, -1),
-        (1, -1),
-        (-1, 1),
-    ]
-
     for cell in cells:
         neighbors = []
         q = cell["q"]
         r = cell["r"]
 
-        for dq, dr in axial_neighbor_directions:
+        for dq, dr in AXIAL_DIRECTIONS:
             neighbor_id = coordinate_to_id.get((q + dq, r + dr))
             if neighbor_id is not None:
                 neighbors.append(neighbor_id)
@@ -133,7 +136,15 @@ def calculate_neighbors(cells):
     return cells
 
 
-def assign_cell_types(cells, honey_ratio, pollen_ratio, empty_ratio, capped_ratio, seed):
+def assign_cell_types(
+    cells,
+    honey_ratio,
+    pollen_ratio,
+    empty_ratio,
+    capped_ratio,
+    seed,
+    queen_enabled=True,
+):
     """Assign honeycomb cell types from normalized ratios.
 
     Parameters:
@@ -163,8 +174,14 @@ def assign_cell_types(cells, honey_ratio, pollen_ratio, empty_ratio, capped_rati
         safe_ratios = [0.0, 0.0, 1.0, 0.0]
         ratio_total = 1.0
 
+    assign_queen_chamber(cells, enabled=queen_enabled)
+    assignable_indices = [
+        index
+        for index, cell in enumerate(cells)
+        if cell.get("queen_role") not in ("center", "reserved")
+    ]
     normalized_ratios = [ratio / ratio_total for ratio in safe_ratios]
-    cell_count = len(cells)
+    cell_count = len(assignable_indices)
     raw_counts = [ratio * cell_count for ratio in normalized_ratios]
     counts = [int(math.floor(value)) for value in raw_counts]
     remaining = cell_count - sum(counts)
@@ -184,14 +201,113 @@ def assign_cell_types(cells, honey_ratio, pollen_ratio, empty_ratio, capped_rati
         assignments.extend([cell_type] * count)
 
     rng = random.Random(seed)
-    shuffled_indices = list(range(cell_count))
+    shuffled_indices = list(assignable_indices)
     rng.shuffle(shuffled_indices)
 
     for cell_index, cell_type in zip(shuffled_indices, assignments):
         cell = cells[cell_index]
         cell["type"] = cell_type
         cell["is_blocked"] = cell_type == "capped"
+        cell["blocked_by_capacity"] = False
+        cell["queen_role"] = None
 
+    return cells
+
+
+def queen_zone_cell_ids(cells):
+    """Return ids for the center and six cells reserved by the queen chamber."""
+    coordinate_to_id = {(cell["q"], cell["r"]): cell["id"] for cell in cells}
+    zone_ids = []
+    for coordinate in ((0, 0),) + AXIAL_DIRECTIONS:
+        cell_id = coordinate_to_id.get(coordinate)
+        if cell_id is not None:
+            zone_ids.append(cell_id)
+    return zone_ids
+
+
+def assign_queen_chamber(cells, enabled=True):
+    """Merge the central seven grid units into one large blocked queen room."""
+    cell_map = get_cell_map(cells)
+    for cell in cells:
+        if cell.get("queen_role") in ("center", "reserved"):
+            cell["type"] = "empty"
+            cell["queen_role"] = None
+            cell["is_blocked"] = False
+            cell["blocked_by_capacity"] = False
+
+    if not enabled:
+        return cells
+
+    center_id = "cell_q0_r0"
+    for cell_id in queen_zone_cell_ids(cells):
+        cell = cell_map[cell_id]
+        is_center = cell_id == center_id
+        cell["type"] = "queen" if is_center else "queen_reserved"
+        cell["queen_role"] = "center" if is_center else "reserved"
+        cell["nectar"] = 0.0
+        cell["pollen"] = 0.0
+        cell["is_blocked"] = True
+        cell["blocked_by_capacity"] = False
+    return cells
+
+
+def hive_cell_count_from_radius(radius, queen_enabled=True):
+    """Return the visible chamber count for an axial hex grid."""
+    radius = max(0, int(radius))
+    total = 1 + 3 * radius * (radius + 1)
+    if queen_enabled and radius >= 1:
+        return total - 6
+    return total
+
+
+def visible_cell_count(cells):
+    """Count visible cells, excluding the hidden queen footprint cells."""
+    return sum(1 for cell in cells if cell.get("type") != "queen_reserved")
+
+
+def cell_used_capacity(cell):
+    """Return the total nectar and pollen currently stored in one cell."""
+    nectar = max(0.0, float(cell.get("nectar", 0.0)))
+    pollen = max(0.0, float(cell.get("pollen", 0.0)))
+    return nectar + pollen
+
+
+def storage_cell_is_full(cell):
+    """Return True when a honey/pollen storage cell has reached capacity."""
+    if cell.get("type") not in ("honey", "pollen"):
+        return False
+    capacity = max(0.0, float(cell.get("capacity", 1.0)))
+    return cell_used_capacity(cell) >= capacity - 0.000001
+
+
+def update_cell_blocked_state(cell):
+    """Block full storage cells and reopen them after resources are removed.
+
+    Capped cells always remain blocked. ``blocked_by_capacity`` distinguishes
+    an automatic full-cell block from an optional manual block supplied by
+    another module.
+    """
+    was_blocked_by_capacity = bool(cell.get("blocked_by_capacity", False))
+    blocked_by_capacity = storage_cell_is_full(cell)
+    manually_blocked = bool(cell.get("manually_blocked", False))
+
+    cell["blocked_by_capacity"] = blocked_by_capacity
+    if cell.get("type") in ("capped", "queen", "queen_reserved"):
+        cell["is_blocked"] = True
+    elif blocked_by_capacity:
+        cell["is_blocked"] = True
+    elif was_blocked_by_capacity:
+        cell["is_blocked"] = manually_blocked
+    elif manually_blocked:
+        cell["is_blocked"] = True
+
+    return cell["is_blocked"]
+
+
+def update_all_blocked_states(cells):
+    """Refresh capacity-based blocked states for every honeycomb cell."""
+    for cell in cells:
+        update_cell_blocked_state(cell)
     return cells
 
 
@@ -223,9 +339,14 @@ def bfs_find_path(cells, start_cell_id, target_type):
     Returns:
         list[str]: Ordered cell ids from start to target, or [] if not found.
     """
+    update_all_blocked_states(cells)
     cell_map = get_cell_map(cells)
     start_cell = cell_map.get(start_cell_id)
-    if start_cell is None or start_cell.get("is_blocked"):
+    if start_cell is None:
+        return []
+    # A bee may leave a full source cell to remove its resource, but capped or
+    # manually blocked cells cannot be used as path starts.
+    if start_cell.get("is_blocked") and not start_cell.get("blocked_by_capacity"):
         return []
 
     # Breadth-first search explores the graph in distance order.
@@ -323,33 +444,208 @@ def create_honeycomb_geometry(cells, cell_size, cell_depth):
     if not cmds.objExists(group_name):
         cmds.group(empty=True, name=group_name)
 
-    material_by_type = {
-        "honey": _create_maya_material(cmds, "chm_honey_amber_MAT", (1.0, 0.58, 0.08)),
-        "pollen": _create_maya_material(cmds, "chm_pollen_yellow_MAT", (1.0, 0.78, 0.12)),
-        "empty": _create_maya_material(cmds, "chm_empty_wax_MAT", (0.92, 0.78, 0.48)),
-        "capped": _create_maya_material(cmds, "chm_capped_beige_MAT", (0.72, 0.60, 0.42)),
-    }
+    wax_floor_material = _create_maya_material(
+        cmds, "chm_pixel_wax_floor_MAT", (0.96, 0.68, 0.28)
+    )
+    wax_wall_material = _create_maya_material(
+        cmds, "chm_pixel_wax_wall_MAT", (1.0, 0.84, 0.48)
+    )
+    honey_material = _create_maya_material(
+        cmds, "chm_pixel_honey_inside_MAT", (1.0, 0.36, 0.015)
+    )
+    honey_highlight_material = _create_maya_material(
+        cmds, "chm_pixel_honey_highlight_MAT", (1.0, 0.78, 0.16)
+    )
+    pollen_materials = [
+        _create_maya_material(cmds, "chm_pixel_pollen_orange_MAT", (1.0, 0.25, 0.01)),
+        _create_maya_material(cmds, "chm_pixel_pollen_gold_MAT", (1.0, 0.63, 0.02)),
+        _create_maya_material(cmds, "chm_pixel_pollen_yellow_MAT", (1.0, 0.88, 0.08)),
+    ]
+    cap_material = _create_maya_material(
+        cmds, "chm_pixel_cap_cream_MAT", (1.0, 0.91, 0.66)
+    )
+    queen_material = _create_maya_material(
+        cmds, "chm_pixel_queen_violet_MAT", (0.64, 0.24, 0.72)
+    )
+
+    pollen_offsets = [
+        (-0.42, -0.18), (-0.20, -0.34), (0.03, -0.38), (0.29, -0.27),
+        (0.43, -0.04), (-0.34, 0.06), (-0.10, -0.02), (0.16, 0.01),
+        (0.37, 0.17), (-0.26, 0.29), (0.01, 0.32), (0.25, 0.34),
+    ]
 
     for cell in cells:
+        if cell.get("type") == "queen_reserved":
+            cell["maya_object"] = None
+            continue
+
         x, _, z = cell["position"]
-        object_name = "{0}_HEX".format(cell["id"])
-        transform, _shape = cmds.polyCylinder(
-            radius=cell_size,
-            height=cell_depth,
+        object_name = "{0}_CELL_GRP".format(cell["id"])
+        is_queen = cell.get("type") == "queen"
+        # The queen chamber replaces the center plus six hidden neighbours.
+        # A 2.43 radius multiplier reaches the inner edges of the second ring.
+        visual_radius = cell_size * 2.43 if is_queen else cell_size
+        visual_depth = cell_depth * 2.4 if is_queen else cell_depth
+        cell_group = cmds.group(empty=True, name=object_name)
+        cmds.parent(cell_group, group_name)
+
+        base_height = max(0.10, cell_depth * 0.30)
+        wall_height = max(0.42, visual_depth * 0.92)
+        wall_radius = visual_radius * 0.93
+        wall_thickness = max(cell_size * 0.13, visual_radius * 0.075)
+
+        base, _base_shape = cmds.polyCylinder(
+            radius=visual_radius * 0.91,
+            height=base_height,
             subdivisionsX=6,
             subdivisionsY=1,
             subdivisionsZ=0,
             axis=(0, 1, 0),
-            name=object_name,
+            name="{0}_floor".format(cell["id"]),
         )
-        cmds.xform(transform, translation=(x, cell_depth * 0.5, z), worldSpace=True)
-        cmds.parent(transform, group_name)
+        cmds.xform(base, translation=(x, base_height * 0.5, z), worldSpace=True)
+        cmds.parent(base, cell_group)
+        _assign_maya_material(cmds, base, wax_floor_material)
 
-        visual_type = cell.get("initial_type", cell.get("type"))
-        material = material_by_type.get(visual_type, material_by_type["empty"])
-        _assign_maya_material(cmds, transform, material)
+        vertices = []
+        for vertex_index in range(6):
+            angle = math.radians(30.0 + vertex_index * 60.0)
+            vertices.append((
+                x + math.cos(angle) * wall_radius,
+                z + math.sin(angle) * wall_radius,
+            ))
 
-        cell["maya_object"] = transform
+        for wall_index in range(6):
+            start_x, start_z = vertices[wall_index]
+            end_x, end_z = vertices[(wall_index + 1) % 6]
+            delta_x = end_x - start_x
+            delta_z = end_z - start_z
+            edge_length = math.sqrt(delta_x * delta_x + delta_z * delta_z)
+            edge_angle = -math.degrees(math.atan2(delta_z, delta_x))
+            wall, _wall_shape = cmds.polyCube(
+                width=edge_length * 1.05,
+                height=wall_height,
+                depth=wall_thickness,
+                name="{0}_wall_{1:02d}".format(cell["id"], wall_index),
+            )
+            cmds.xform(
+                wall,
+                translation=(
+                    (start_x + end_x) * 0.5,
+                    base_height + wall_height * 0.5,
+                    (start_z + end_z) * 0.5,
+                ),
+                rotation=(0.0, edge_angle, 0.0),
+                worldSpace=True,
+            )
+            cmds.parent(wall, cell_group)
+            _assign_maya_material(cmds, wall, wax_wall_material)
+
+        cell_type = cell.get("type")
+        content_objects = []
+        if cell_type == "honey":
+            pool, _pool_shape = cmds.polyCylinder(
+                radius=visual_radius * 0.70,
+                height=max(0.075, cell_depth * 0.22),
+                subdivisionsX=6,
+                subdivisionsY=1,
+                subdivisionsZ=0,
+                axis=(0, 1, 0),
+                name="{0}_honey_pool".format(cell["id"]),
+            )
+            cmds.xform(
+                pool,
+                translation=(x, base_height + max(0.045, cell_depth * 0.12), z),
+                worldSpace=True,
+            )
+            cmds.parent(pool, cell_group)
+            _assign_maya_material(cmds, pool, honey_material)
+            content_objects.append(pool)
+
+            highlight, _highlight_shape = cmds.polyCube(
+                width=visual_radius * 0.30,
+                height=0.035,
+                depth=visual_radius * 0.10,
+                name="{0}_honey_glint".format(cell["id"]),
+            )
+            cmds.xform(
+                highlight,
+                translation=(
+                    x - visual_radius * 0.18,
+                    base_height + max(0.095, cell_depth * 0.27),
+                    z + visual_radius * 0.12,
+                ),
+                worldSpace=True,
+            )
+            cmds.parent(highlight, cell_group)
+            _assign_maya_material(cmds, highlight, honey_highlight_material)
+            content_objects.append(highlight)
+
+        elif cell_type == "pollen":
+            grain_size = max(0.09, cell_size * 0.13)
+            for grain_index, (offset_x, offset_z) in enumerate(pollen_offsets):
+                grain, _grain_shape = cmds.polyCube(
+                    width=grain_size,
+                    height=grain_size * (0.75 + (grain_index % 3) * 0.12),
+                    depth=grain_size,
+                    name="{0}_pollen_pixel_{1:02d}".format(cell["id"], grain_index),
+                )
+                cmds.xform(
+                    grain,
+                    translation=(
+                        x + offset_x * visual_radius,
+                        base_height + grain_size * (0.40 + (grain_index % 2) * 0.18),
+                        z + offset_z * visual_radius,
+                    ),
+                    worldSpace=True,
+                )
+                cmds.parent(grain, cell_group)
+                _assign_maya_material(
+                    cmds, grain, pollen_materials[grain_index % len(pollen_materials)]
+                )
+                content_objects.append(grain)
+
+        elif cell_type == "capped":
+            cap_height = max(0.09, cell_depth * 0.24)
+            cap, _cap_shape = cmds.polyCylinder(
+                radius=visual_radius * 0.82,
+                height=cap_height,
+                subdivisionsX=6,
+                subdivisionsY=1,
+                subdivisionsZ=0,
+                axis=(0, 1, 0),
+                name="{0}_wax_cap".format(cell["id"]),
+            )
+            cmds.xform(
+                cap,
+                translation=(x, base_height + wall_height - cap_height * 0.55, z),
+                worldSpace=True,
+            )
+            cmds.parent(cap, cell_group)
+            _assign_maya_material(cmds, cap, cap_material)
+            content_objects.append(cap)
+
+        elif cell_type == "queen":
+            queen_floor, _queen_shape = cmds.polyCylinder(
+                radius=visual_radius * 0.72,
+                height=max(0.08, cell_depth * 0.24),
+                subdivisionsX=6,
+                subdivisionsY=1,
+                subdivisionsZ=0,
+                axis=(0, 1, 0),
+                name="{0}_queen_floor".format(cell["id"]),
+            )
+            cmds.xform(
+                queen_floor,
+                translation=(x, base_height + max(0.05, cell_depth * 0.13), z),
+                worldSpace=True,
+            )
+            cmds.parent(queen_floor, cell_group)
+            _assign_maya_material(cmds, queen_floor, queen_material)
+            content_objects.append(queen_floor)
+
+        cell["maya_object"] = cell_group
+        cell["content_objects"] = content_objects
 
     return cells
 
