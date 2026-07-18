@@ -2,6 +2,8 @@
 
 Place visual references here, including cloud-hive, honeycomb, bee, wax, and resource particle references.
 
+Project concept: Cloud-Hive Bloomfield, a honeycomb flower-field resource system.
+
 Current visual direction:
 
 - Thick stylized honeycomb terrain.

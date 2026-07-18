@@ -11,6 +11,6 @@ Suggested files:
 - capped_cell_detail.ma
 - resource_nectar.ma
 - resource_pollen.ma
-- central_hive_placeholder.ma
+- honeycomb_field_accent.ma
 
 The first visual prototype uses Maya primitives, so these files are intentionally not required yet.

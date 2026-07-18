@@ -45,5 +45,6 @@ DEFAULT_INTEGRATION_PARAMETERS = {
         "animation_end": 320,
         "drop_fall_frames": 64,
         "bee_frame_step": 22,
+        "show_paths": True,
     },
 }

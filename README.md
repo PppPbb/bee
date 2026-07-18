@@ -1,16 +1,18 @@
-# Cloud-Hive Meadow
+# Cloud-Hive Bloomfield: A Procedural Honeycomb Resource System in Maya
 
-Cloud-Hive Meadow is a Maya Python course project for building a stylized procedural honeycomb resource-management scene in Autodesk Maya.
+**云上蜜源驱动的程序化蜂巢花田系统**
+
+Cloud-Hive Bloomfield is a Maya Python course project for building a stylized procedural honeycomb flower-field resource-management scene in Autodesk Maya.
 
 ## Goal
 
-A stylized procedural honeycomb resource-management scene in Maya Python.
+A stylized procedural honeycomb flower-field scene in Maya Python.
 
-Cloud flowers generate resources, resource drops fall onto a honeycomb terrain, bees correct misplaced resources, and the final scene visualizes resource flow, bee movement, paths, and cell state changes.
+Cloud flowers generate resources, nectar and pollen drops fall onto flat honeycomb terrain, bees correct misplaced resources, and the final scene visualizes resource flow, bee movement, BFS paths, and cell state changes.
 
 ## MVP Features
 
-- Hexagonal honeycomb terrain
+- Flat hexagonal honeycomb terrain
 - Cell type assignment
 - Cloud resource generation
 - Resource drop mapping
@@ -58,7 +60,7 @@ maya_scripts/
 - `code/visual_module.py`: Maya scene materials, debug overlays, path drawing, and final presentation visuals.
 - `code/main.py`: future entry point that coordinates modules.
 
-The existing `maya_scripts/cloud_hive_meadow.py` is kept as a useful visual prototype/reference script while the new modular structure is developed.
+The existing `maya_scripts/cloud_hive_meadow.py` filename is kept for compatibility with the current Maya entry workflow.
 
 ## Core Loop
 
