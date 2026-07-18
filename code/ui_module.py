@@ -275,6 +275,12 @@ def show_ui(initial_scene_data=None):
         title=WINDOW_TITLE,
         widthHeight=(420, 760),
         sizeable=True,
+        resizeToFitChildren=False,
+    )
+    cmds.scrollLayout(
+        childResizable=True,
+        horizontalScrollBarThickness=0,
+        verticalScrollBarThickness=14,
     )
     cmds.columnLayout(adjustableColumn=True, rowSpacing=7)
     cmds.text(label="Cloud-Hive Meadow", height=30)
