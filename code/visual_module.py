@@ -111,7 +111,7 @@ def create_maya_scene(config=None, prior_cell_state=None):
     _parent_known_scene_groups()
     cmds.currentTime(1)
 
-    print("Cloud-Hive Meadow Maya visualization created.")
+    print("Cloud-Hive Bloomfield Maya visualization created.")
     print("Cells: {0}, Clouds: {1}, Drops: {2}, Tasks: {3}, Bees: {4}".format(
         len(cells),
         len(clouds),
@@ -875,10 +875,10 @@ def create_scene_labels_optional(summary=None):
         cmds.group(empty=True, name=group_name)
 
     if summary is None:
-        label_text = "Cloud-Hive Meadow"
+        label_text = "Cloud-Hive Bloomfield"
     else:
         label_text = (
-            "Cloud-Hive Meadow\\n"
+            "Cloud-Hive Bloomfield\\n"
             "Cells: {0}  Drops: {1}\\n"
             "Tasks: {2}  Paths: {3}"
         ).format(

@@ -267,7 +267,7 @@ def print_summary(simulation_result):
     """
     summary = simulation_result["summary"]
 
-    print("Cloud-Hive Meadow Integration Summary")
+    print("Cloud-Hive Bloomfield Integration Summary")
     print("------------------------------------")
     print("Cells:", summary["cell_count"])
     print("Cell type counts:", summary["cell_type_counts"])

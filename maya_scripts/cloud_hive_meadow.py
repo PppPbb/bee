@@ -54,7 +54,7 @@ def _find_project_code_dir():
             return code_dir
 
     raise RuntimeError(
-        "Could not find Cloud-Hive Meadow code directory. "
+        "Could not find Cloud-Hive Bloomfield code directory. "
         "Expected to find code/visual_module.py under C:\\Users\\YUN\\Desktop\\bee. "
         "Add the repository code folder to sys.path before running this script."
     )
@@ -65,7 +65,7 @@ def _prepare_project_modules():
     code_dir = _find_project_code_dir()
     if code_dir not in sys.path:
         sys.path.insert(0, code_dir)
-    print("Cloud-Hive Meadow code directory:", code_dir)
+    print("Cloud-Hive Bloomfield code directory:", code_dir)
     _reload_project_modules()
     return code_dir
 
@@ -93,7 +93,7 @@ def run(open_control_panel=True):
 
         scene_data = create_maya_scene()
 
-    print("Cloud-Hive Meadow Maya scene created successfully.")
+    print("Cloud-Hive Bloomfield Maya scene created successfully.")
     return scene_data
 
 
@@ -108,7 +108,7 @@ def open_ui():
     from ui_module import create_cloud_hive_ui
 
     window = create_cloud_hive_ui()
-    print("Cloud-Hive Meadow UI opened.")
+    print("Cloud-Hive Bloomfield UI opened.")
     return window
 
 

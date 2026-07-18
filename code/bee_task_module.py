@@ -1,8 +1,25 @@
 """Bee task creation, assignment, and Maya animation helpers for Cloud-Hive Meadow."""
 
 import math
+import re
 
 from hive_module import bfs_find_path, get_cell_map
+
+
+def _sanitize_maya_name_component(value):
+    """Return one Maya-safe object-name component.
+
+    Maya DAG separators, namespaces, whitespace, and other punctuation are
+    replaced with underscores. The helper stays pure Python so importing this
+    module outside Maya remains supported.
+    """
+    sanitized = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or ""))
+    sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+    if not sanitized:
+        return "unnamed"
+    if sanitized[0].isdigit():
+        sanitized = "_" + sanitized
+    return sanitized
 
 
 def expected_cell_type_for_resource(resource_type):
@@ -565,31 +582,101 @@ def animate_bee_collection_cycle(
         frames.append(frame)
 
     resource_type = drop.get("resource_type", "nectar")
-    payload_material = _create_maya_material(
-        cmds,
-        "chm_bee_payload_{0}_MAT".format(resource_type),
-        (1.0, 0.62, 0.02) if resource_type == "nectar" else (1.0, 0.35, 0.08),
-    )
-    payload, _shape = cmds.polyCube(
-        width=0.13,
-        height=0.13,
-        depth=0.13,
-        name="{0}_{1}_payload".format(bee["id"], resource_type),
-    )
-    cmds.parent(payload, bee_object)
-    cmds.xform(payload, translation=(0.0, -0.25, 0.0), objectSpace=True)
-    _assign_maya_material(cmds, payload, payload_material)
-
     pickup_frame = frames[2]
     delivery_frame = frames[delivery_waypoint_index]
-    cmds.setKeyframe(payload, attribute="visibility", time=pickup_frame - 1, value=0)
-    cmds.setKeyframe(payload, attribute="visibility", time=pickup_frame, value=1)
-    cmds.setKeyframe(payload, attribute="visibility", time=delivery_frame, value=1)
-    cmds.setKeyframe(payload, attribute="visibility", time=delivery_frame + 1, value=0)
-
     bee["animation_frames"] = frames
     bee["resource_type"] = resource_type
     task["delivery_frame"] = delivery_frame
+    task["payload_object"] = None
+
+    safe_bee_id = _sanitize_maya_name_component(bee.get("id", "bee"))
+    safe_task_id = _sanitize_maya_name_component(task.get("id", "task"))
+    safe_resource_type = _sanitize_maya_name_component(resource_type)
+    payload_name = "{0}_{1}_{2}_payload".format(
+        safe_bee_id,
+        safe_task_id,
+        safe_resource_type,
+    )
+    payload_material = _create_maya_material(
+        cmds,
+        "chm_bee_payload_{0}_MAT".format(safe_resource_type),
+        (1.0, 0.62, 0.02) if resource_type == "nectar" else (1.0, 0.35, 0.08),
+    )
+    payload_nodes = cmds.polyCube(
+        width=0.13,
+        height=0.13,
+        depth=0.13,
+        name=payload_name,
+    )
+    payload = payload_nodes[0] if payload_nodes else None
+    if not payload or not cmds.objExists(payload):
+        cmds.warning(
+            "Cloud-Hive Bloomfield: payload '{0}' was not created for task "
+            "'{1}'; skipping payload animation.".format(payload_name, task.get("id"))
+        )
+        return frames
+
+    parented = cmds.parent(payload, bee_object)
+    if parented:
+        payload = parented[0]
+
+    if not payload or not cmds.objExists(payload):
+        cmds.warning(
+            "Cloud-Hive Bloomfield: payload '{0}' is missing after parenting "
+            "for task '{1}'; skipping payload animation.".format(
+                payload_name,
+                task.get("id"),
+            )
+        )
+        return frames
+
+    cmds.xform(payload, translation=(0.0, -0.25, 0.0), objectSpace=True)
+
+    if not cmds.objExists(payload):
+        cmds.warning(
+            "Cloud-Hive Bloomfield: payload '{0}' disappeared before material "
+            "assignment; skipping payload animation.".format(payload_name)
+        )
+        return frames
+    _assign_maya_material(cmds, payload, payload_material)
+
+    visibility_keys = (
+        (pickup_frame - 1, 0),
+        (pickup_frame, 1),
+        (delivery_frame, 1),
+        (delivery_frame + 1, 0),
+    )
+    payload_animation_complete = True
+    for keyframe, visibility in visibility_keys:
+        if not cmds.objExists(payload):
+            cmds.warning(
+                "Cloud-Hive Bloomfield: payload '{0}' disappeared before frame "
+                "{1}; skipping remaining payload keyframes.".format(
+                    payload_name,
+                    keyframe,
+                )
+            )
+            payload_animation_complete = False
+            break
+        cmds.setKeyframe(
+            payload,
+            attribute="visibility",
+            time=keyframe,
+            value=visibility,
+        )
+
+    if not payload_animation_complete:
+        return frames
+    if not cmds.objExists(payload):
+        cmds.warning(
+            "Cloud-Hive Bloomfield: payload '{0}' disappeared after keyframing; "
+            "skipping payload registration.".format(payload_name)
+        )
+        return frames
+
+    task["payload_object"] = payload
+    bee.setdefault("payload_objects", []).append(payload)
+
     return frames
 
 
