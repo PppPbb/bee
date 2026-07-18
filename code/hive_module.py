@@ -419,6 +419,90 @@ def _assign_maya_material(cmds, node, material):
     cmds.select(clear=True)
 
 
+def queen_footprint_outline(cell_size):
+    """Return the exact outer boundary of the seven-cell queen footprint.
+
+    The queen chamber occupies axial coordinates (0, 0) and its six direct
+    neighbours.  Cancelling the shared internal hex edges leaves an 18-edge
+    perimeter that fits the second ring of ordinary cells without triangular
+    gaps.
+    """
+    coordinates = [(0, 0)] + list(AXIAL_DIRECTIONS)
+    edge_counts = {}
+    point_values = {}
+
+    for q, r in coordinates:
+        center_x, _center_y, center_z = axial_to_world(q, r, cell_size)
+        vertices = []
+        for vertex_index in range(6):
+            angle = math.radians(30.0 + vertex_index * 60.0)
+            point = (
+                center_x + math.cos(angle) * cell_size,
+                center_z + math.sin(angle) * cell_size,
+            )
+            key = (round(point[0], 6), round(point[1], 6))
+            point_values[key] = point
+            vertices.append(key)
+
+        for vertex_index in range(6):
+            edge = tuple(sorted((
+                vertices[vertex_index],
+                vertices[(vertex_index + 1) % 6],
+            )))
+            edge_counts[edge] = edge_counts.get(edge, 0) + 1
+
+    adjacency = {}
+    for (start, end), count in edge_counts.items():
+        if count != 1:
+            continue
+        adjacency.setdefault(start, []).append(end)
+        adjacency.setdefault(end, []).append(start)
+
+    start = min(adjacency, key=lambda value: (value[0], value[1]))
+    outline_keys = [start]
+    previous = None
+    current = start
+    while True:
+        candidates = [point for point in adjacency[current] if point != previous]
+        next_key = candidates[0]
+        if next_key == start:
+            break
+        outline_keys.append(next_key)
+        previous, current = current, next_key
+
+    return [point_values[key] for key in outline_keys]
+
+
+def _scale_outline(outline, scale):
+    """Scale an XZ outline around its centroid."""
+    center_x = sum(point[0] for point in outline) / len(outline)
+    center_z = sum(point[1] for point in outline) / len(outline)
+    return [
+        (
+            center_x + (point[0] - center_x) * scale,
+            center_z + (point[1] - center_z) * scale,
+        )
+        for point in outline
+    ]
+
+
+def _create_outline_prism(cmds, name, outline, height, base_y=0.0):
+    """Create an extruded Maya polygon from an arbitrary XZ outline."""
+    points = [(x, base_y, z) for x, z in outline]
+    transform = cmds.polyCreateFacet(
+        point=points,
+        name=name,
+        constructionHistory=False,
+    )[0]
+    cmds.polyExtrudeFacet(
+        "{0}.f[0]".format(transform),
+        keepFacesTogether=True,
+        translateY=height,
+        constructionHistory=False,
+    )
+    return transform
+
+
 def create_honeycomb_geometry(cells, cell_size, cell_depth):
     """Create Maya hexagonal prism geometry for the honeycomb cells.
 
@@ -482,20 +566,80 @@ def create_honeycomb_geometry(cells, cell_size, cell_depth):
         x, _, z = cell["position"]
         object_name = "{0}_CELL_GRP".format(cell["id"])
         is_queen = cell.get("type") == "queen"
-        # The queen chamber replaces the center plus six hidden neighbours.
-        # A 2.43 radius multiplier reaches the inner edges of the second ring.
-        visual_radius = cell_size * 2.43 if is_queen else cell_size
-        visual_depth = cell_depth * 2.4 if is_queen else cell_depth
         cell_group = cmds.group(empty=True, name=object_name)
         cmds.parent(cell_group, group_name)
 
+        if is_queen:
+            # A scaled regular hex cannot fill the union of seven hex cells.
+            # Build the real 18-edge footprint so every outer segment shares
+            # the same boundary as a neighbouring cell in the second ring.
+            outline = queen_footprint_outline(cell_size)
+            base_height = max(0.12, cell_depth * 0.36)
+            wall_height = max(0.58, cell_depth * 2.15)
+            wall_thickness = max(cell_size * 0.13, 0.10)
+            seam_overlap = max(0.015, cell_depth * 0.04)
+
+            base = _create_outline_prism(
+                cmds,
+                "{0}_floor".format(cell["id"]),
+                outline,
+                base_height,
+            )
+            cmds.parent(base, cell_group)
+            _assign_maya_material(cmds, base, wax_floor_material)
+
+            for wall_index in range(len(outline)):
+                start_x, start_z = outline[wall_index]
+                end_x, end_z = outline[(wall_index + 1) % len(outline)]
+                delta_x = end_x - start_x
+                delta_z = end_z - start_z
+                edge_length = math.sqrt(delta_x * delta_x + delta_z * delta_z)
+                edge_angle = -math.degrees(math.atan2(delta_z, delta_x))
+                wall, _wall_shape = cmds.polyCube(
+                    width=edge_length * 1.04,
+                    height=wall_height,
+                    depth=wall_thickness,
+                    name="{0}_wall_{1:02d}".format(cell["id"], wall_index),
+                )
+                cmds.xform(
+                    wall,
+                    translation=(
+                        (start_x + end_x) * 0.5,
+                        base_height + wall_height * 0.5 - seam_overlap,
+                        (start_z + end_z) * 0.5,
+                    ),
+                    rotation=(0.0, edge_angle, 0.0),
+                    worldSpace=True,
+                )
+                cmds.parent(wall, cell_group)
+                _assign_maya_material(cmds, wall, wax_wall_material)
+
+            queen_floor = _create_outline_prism(
+                cmds,
+                "{0}_queen_floor".format(cell["id"]),
+                _scale_outline(outline, 0.78),
+                max(0.08, cell_depth * 0.24),
+                base_y=base_height + 0.015,
+            )
+            cmds.parent(queen_floor, cell_group)
+            _assign_maya_material(cmds, queen_floor, queen_material)
+
+            cell["maya_object"] = cell_group
+            cell["content_objects"] = [queen_floor]
+            continue
+
+        visual_radius = cell_size
+        visual_depth = cell_depth
         base_height = max(0.10, cell_depth * 0.30)
         wall_height = max(0.42, visual_depth * 0.92)
         wall_radius = visual_radius * 0.93
         wall_thickness = max(cell_size * 0.13, visual_radius * 0.075)
+        seam_overlap = max(0.015, cell_depth * 0.04)
 
         base, _base_shape = cmds.polyCylinder(
-            radius=visual_radius * 0.91,
+            # Extend the floor under the wall ring.  The previous 0.91 scale
+            # exposed dark triangular gaps around the lower wall corners.
+            radius=visual_radius * 0.99,
             height=base_height,
             subdivisionsX=6,
             subdivisionsY=1,
@@ -504,6 +648,10 @@ def create_honeycomb_geometry(cells, cell_size, cell_depth):
             name="{0}_floor".format(cell["id"]),
         )
         cmds.xform(base, translation=(x, base_height * 0.5, z), worldSpace=True)
+        # Maya's six-sided cylinder starts at a different angular offset from
+        # the pointy-top axial hex used by the wall vertices.  Rotate it so the
+        # floor edges and the wall edges are parallel.
+        cmds.rotate(0.0, 30.0, 0.0, base, relative=True, objectSpace=True)
         cmds.parent(base, cell_group)
         _assign_maya_material(cmds, base, wax_floor_material)
 
@@ -530,11 +678,11 @@ def create_honeycomb_geometry(cells, cell_size, cell_depth):
             )
             cmds.xform(
                 wall,
-                translation=(
-                    (start_x + end_x) * 0.5,
-                    base_height + wall_height * 0.5,
-                    (start_z + end_z) * 0.5,
-                ),
+                    translation=(
+                        (start_x + end_x) * 0.5,
+                        base_height + wall_height * 0.5 - seam_overlap,
+                        (start_z + end_z) * 0.5,
+                    ),
                 rotation=(0.0, edge_angle, 0.0),
                 worldSpace=True,
             )
@@ -558,6 +706,7 @@ def create_honeycomb_geometry(cells, cell_size, cell_depth):
                 translation=(x, base_height + max(0.045, cell_depth * 0.12), z),
                 worldSpace=True,
             )
+            cmds.rotate(0.0, 30.0, 0.0, pool, relative=True, objectSpace=True)
             cmds.parent(pool, cell_group)
             _assign_maya_material(cmds, pool, honey_material)
             content_objects.append(pool)
@@ -621,28 +770,10 @@ def create_honeycomb_geometry(cells, cell_size, cell_depth):
                 translation=(x, base_height + wall_height - cap_height * 0.55, z),
                 worldSpace=True,
             )
+            cmds.rotate(0.0, 30.0, 0.0, cap, relative=True, objectSpace=True)
             cmds.parent(cap, cell_group)
             _assign_maya_material(cmds, cap, cap_material)
             content_objects.append(cap)
-
-        elif cell_type == "queen":
-            queen_floor, _queen_shape = cmds.polyCylinder(
-                radius=visual_radius * 0.72,
-                height=max(0.08, cell_depth * 0.24),
-                subdivisionsX=6,
-                subdivisionsY=1,
-                subdivisionsZ=0,
-                axis=(0, 1, 0),
-                name="{0}_queen_floor".format(cell["id"]),
-            )
-            cmds.xform(
-                queen_floor,
-                translation=(x, base_height + max(0.05, cell_depth * 0.13), z),
-                worldSpace=True,
-            )
-            cmds.parent(queen_floor, cell_group)
-            _assign_maya_material(cmds, queen_floor, queen_material)
-            content_objects.append(queen_floor)
 
         cell["maya_object"] = cell_group
         cell["content_objects"] = content_objects
