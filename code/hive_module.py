@@ -5,6 +5,16 @@ import random
 from collections import deque
 
 
+AXIAL_DIRECTIONS = (
+    (1, 0),
+    (-1, 0),
+    (0, 1),
+    (0, -1),
+    (1, -1),
+    (-1, 1),
+)
+
+
 def axial_to_world(q, r, cell_size):
     """Convert axial hex coordinates to a flat Maya/world position.
 
@@ -64,6 +74,8 @@ def generate_hex_grid(size, cell_size):
                     "capacity": 1.0,
                     "neighbors": [],
                     "is_blocked": False,
+                    "blocked_by_capacity": False,
+                    "queen_role": None,
                     "maya_object": None,
                 }
             )
@@ -109,21 +121,12 @@ def calculate_neighbors(cells):
         list[dict]: The same cells list with updated neighbor ids.
     """
     coordinate_to_id = {(cell["q"], cell["r"]): cell["id"] for cell in cells}
-    axial_neighbor_directions = [
-        (1, 0),
-        (-1, 0),
-        (0, 1),
-        (0, -1),
-        (1, -1),
-        (-1, 1),
-    ]
-
     for cell in cells:
         neighbors = []
         q = cell["q"]
         r = cell["r"]
 
-        for dq, dr in axial_neighbor_directions:
+        for dq, dr in AXIAL_DIRECTIONS:
             neighbor_id = coordinate_to_id.get((q + dq, r + dr))
             if neighbor_id is not None:
                 neighbors.append(neighbor_id)
@@ -133,7 +136,15 @@ def calculate_neighbors(cells):
     return cells
 
 
-def assign_cell_types(cells, honey_ratio, pollen_ratio, empty_ratio, capped_ratio, seed):
+def assign_cell_types(
+    cells,
+    honey_ratio,
+    pollen_ratio,
+    empty_ratio,
+    capped_ratio,
+    seed,
+    queen_enabled=True,
+):
     """Assign honeycomb cell types from normalized ratios.
 
     Parameters:
@@ -163,8 +174,14 @@ def assign_cell_types(cells, honey_ratio, pollen_ratio, empty_ratio, capped_rati
         safe_ratios = [0.0, 0.0, 1.0, 0.0]
         ratio_total = 1.0
 
+    assign_queen_chamber(cells, enabled=queen_enabled)
+    assignable_indices = [
+        index
+        for index, cell in enumerate(cells)
+        if cell.get("queen_role") not in ("center", "reserved")
+    ]
     normalized_ratios = [ratio / ratio_total for ratio in safe_ratios]
-    cell_count = len(cells)
+    cell_count = len(assignable_indices)
     raw_counts = [ratio * cell_count for ratio in normalized_ratios]
     counts = [int(math.floor(value)) for value in raw_counts]
     remaining = cell_count - sum(counts)
@@ -184,14 +201,113 @@ def assign_cell_types(cells, honey_ratio, pollen_ratio, empty_ratio, capped_rati
         assignments.extend([cell_type] * count)
 
     rng = random.Random(seed)
-    shuffled_indices = list(range(cell_count))
+    shuffled_indices = list(assignable_indices)
     rng.shuffle(shuffled_indices)
 
     for cell_index, cell_type in zip(shuffled_indices, assignments):
         cell = cells[cell_index]
         cell["type"] = cell_type
         cell["is_blocked"] = cell_type == "capped"
+        cell["blocked_by_capacity"] = False
+        cell["queen_role"] = None
 
+    return cells
+
+
+def queen_zone_cell_ids(cells):
+    """Return ids for the center and six cells reserved by the queen chamber."""
+    coordinate_to_id = {(cell["q"], cell["r"]): cell["id"] for cell in cells}
+    zone_ids = []
+    for coordinate in ((0, 0),) + AXIAL_DIRECTIONS:
+        cell_id = coordinate_to_id.get(coordinate)
+        if cell_id is not None:
+            zone_ids.append(cell_id)
+    return zone_ids
+
+
+def assign_queen_chamber(cells, enabled=True):
+    """Merge the central seven grid units into one large blocked queen room."""
+    cell_map = get_cell_map(cells)
+    for cell in cells:
+        if cell.get("queen_role") in ("center", "reserved"):
+            cell["type"] = "empty"
+            cell["queen_role"] = None
+            cell["is_blocked"] = False
+            cell["blocked_by_capacity"] = False
+
+    if not enabled:
+        return cells
+
+    center_id = "cell_q0_r0"
+    for cell_id in queen_zone_cell_ids(cells):
+        cell = cell_map[cell_id]
+        is_center = cell_id == center_id
+        cell["type"] = "queen" if is_center else "queen_reserved"
+        cell["queen_role"] = "center" if is_center else "reserved"
+        cell["nectar"] = 0.0
+        cell["pollen"] = 0.0
+        cell["is_blocked"] = True
+        cell["blocked_by_capacity"] = False
+    return cells
+
+
+def hive_cell_count_from_radius(radius, queen_enabled=True):
+    """Return the visible chamber count for an axial hex grid."""
+    radius = max(0, int(radius))
+    total = 1 + 3 * radius * (radius + 1)
+    if queen_enabled and radius >= 1:
+        return total - 6
+    return total
+
+
+def visible_cell_count(cells):
+    """Count visible cells, excluding the hidden queen footprint cells."""
+    return sum(1 for cell in cells if cell.get("type") != "queen_reserved")
+
+
+def cell_used_capacity(cell):
+    """Return the total nectar and pollen currently stored in one cell."""
+    nectar = max(0.0, float(cell.get("nectar", 0.0)))
+    pollen = max(0.0, float(cell.get("pollen", 0.0)))
+    return nectar + pollen
+
+
+def storage_cell_is_full(cell):
+    """Return True when a honey/pollen storage cell has reached capacity."""
+    if cell.get("type") not in ("honey", "pollen"):
+        return False
+    capacity = max(0.0, float(cell.get("capacity", 1.0)))
+    return cell_used_capacity(cell) >= capacity - 0.000001
+
+
+def update_cell_blocked_state(cell):
+    """Block full storage cells and reopen them after resources are removed.
+
+    Capped cells always remain blocked. ``blocked_by_capacity`` distinguishes
+    an automatic full-cell block from an optional manual block supplied by
+    another module.
+    """
+    was_blocked_by_capacity = bool(cell.get("blocked_by_capacity", False))
+    blocked_by_capacity = storage_cell_is_full(cell)
+    manually_blocked = bool(cell.get("manually_blocked", False))
+
+    cell["blocked_by_capacity"] = blocked_by_capacity
+    if cell.get("type") in ("capped", "queen", "queen_reserved"):
+        cell["is_blocked"] = True
+    elif blocked_by_capacity:
+        cell["is_blocked"] = True
+    elif was_blocked_by_capacity:
+        cell["is_blocked"] = manually_blocked
+    elif manually_blocked:
+        cell["is_blocked"] = True
+
+    return cell["is_blocked"]
+
+
+def update_all_blocked_states(cells):
+    """Refresh capacity-based blocked states for every honeycomb cell."""
+    for cell in cells:
+        update_cell_blocked_state(cell)
     return cells
 
 
@@ -223,9 +339,14 @@ def bfs_find_path(cells, start_cell_id, target_type):
     Returns:
         list[str]: Ordered cell ids from start to target, or [] if not found.
     """
+    update_all_blocked_states(cells)
     cell_map = get_cell_map(cells)
     start_cell = cell_map.get(start_cell_id)
-    if start_cell is None or start_cell.get("is_blocked"):
+    if start_cell is None:
+        return []
+    # A bee may leave a full source cell to remove its resource, but capped or
+    # manually blocked cells cannot be used as path starts.
+    if start_cell.get("is_blocked") and not start_cell.get("blocked_by_capacity"):
         return []
 
     # Breadth-first search explores the graph in distance order.
@@ -328,25 +449,34 @@ def create_honeycomb_geometry(cells, cell_size, cell_depth):
         "pollen": _create_maya_material(cmds, "chm_pollen_yellow_MAT", (1.0, 0.78, 0.12)),
         "empty": _create_maya_material(cmds, "chm_empty_wax_MAT", (0.92, 0.78, 0.48)),
         "capped": _create_maya_material(cmds, "chm_capped_beige_MAT", (0.72, 0.60, 0.42)),
+        "queen": _create_maya_material(cmds, "chm_queen_violet_MAT", (0.62, 0.24, 0.72)),
     }
 
     for cell in cells:
+        if cell.get("type") == "queen_reserved":
+            cell["maya_object"] = None
+            continue
+
         x, _, z = cell["position"]
         object_name = "{0}_HEX".format(cell["id"])
+        is_queen = cell.get("type") == "queen"
+        # The queen chamber replaces the center plus six hidden neighbours.
+        # A 2.43 radius multiplier reaches the inner edges of the second ring.
+        visual_radius = cell_size * 2.43 if is_queen else cell_size
+        visual_depth = cell_depth * 2.4 if is_queen else cell_depth
         transform, _shape = cmds.polyCylinder(
-            radius=cell_size,
-            height=cell_depth,
+            radius=visual_radius,
+            height=visual_depth,
             subdivisionsX=6,
             subdivisionsY=1,
             subdivisionsZ=0,
             axis=(0, 1, 0),
             name=object_name,
         )
-        cmds.xform(transform, translation=(x, cell_depth * 0.5, z), worldSpace=True)
+        cmds.xform(transform, translation=(x, visual_depth * 0.5, z), worldSpace=True)
         cmds.parent(transform, group_name)
 
-        visual_type = cell.get("initial_type", cell.get("type"))
-        material = material_by_type.get(visual_type, material_by_type["empty"])
+        material = material_by_type.get(cell.get("type"), material_by_type["empty"])
         _assign_maya_material(cmds, transform, material)
 
         cell["maya_object"] = transform
