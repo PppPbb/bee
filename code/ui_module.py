@@ -4,7 +4,7 @@ import copy
 
 
 WINDOW_NAME = "CloudHiveControlPanel"
-WINDOW_TITLE = "Cloud-Hive Control Panel"
+WINDOW_TITLE = "Cloud-Hive Bloomfield Control Panel"
 CONTROLS = {}
 LAST_SCENE_DATA = None
 CURRENT_PARAMETERS = None
@@ -162,7 +162,7 @@ def generate_from_ui(*_args):
     LAST_SCENE_DATA = create_maya_scene(CURRENT_PARAMETERS)
     _update_status(cmds)
     cmds.currentTime(1)
-    print("Generated Cloud-Hive scene from UI.")
+    print("Generated Cloud-Hive Bloomfield scene from UI.")
     print_summary(LAST_SCENE_DATA)
     return LAST_SCENE_DATA
 
@@ -178,7 +178,7 @@ def clear_scene_from_ui(*_args):
     LAST_SCENE_DATA = None
     SIMULATION_STEP = 0
     _update_status(cmds)
-    print("Cleared Cloud-Hive Meadow scene objects.")
+    print("Cleared Cloud-Hive Bloomfield scene objects.")
 
 
 def run_pure_python_summary(*_args):
@@ -277,7 +277,7 @@ def show_ui(initial_scene_data=None):
         sizeable=True,
     )
     cmds.columnLayout(adjustableColumn=True, rowSpacing=7)
-    cmds.text(label="Cloud-Hive Meadow", height=30)
+    cmds.text(label="Cloud-Hive Bloomfield", height=30)
 
     hive_defaults = defaults["hive"]
     cloud_defaults = defaults["clouds"]
