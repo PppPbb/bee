@@ -72,6 +72,7 @@ def generate_hex_grid(size, cell_size):
                     "nectar": 0.0,
                     "pollen": 0.0,
                     "capacity": 1.0,
+                    "reserved_amount": 0.0,
                     "neighbors": [],
                     "is_blocked": False,
                     "blocked_by_capacity": False,
@@ -209,6 +210,7 @@ def assign_cell_types(
         cell["type"] = cell_type
         cell["is_blocked"] = cell_type == "capped"
         cell["blocked_by_capacity"] = False
+        cell["reserved_amount"] = 0.0
         cell["queen_role"] = None
 
     return cells
@@ -246,6 +248,7 @@ def assign_queen_chamber(cells, enabled=True):
         cell["queen_role"] = "center" if is_center else "reserved"
         cell["nectar"] = 0.0
         cell["pollen"] = 0.0
+        cell["reserved_amount"] = 0.0
         cell["is_blocked"] = True
         cell["blocked_by_capacity"] = False
     return cells
@@ -287,7 +290,6 @@ def update_cell_blocked_state(cell):
     an automatic full-cell block from an optional manual block supplied by
     another module.
     """
-    was_blocked_by_capacity = bool(cell.get("blocked_by_capacity", False))
     blocked_by_capacity = storage_cell_is_full(cell)
     manually_blocked = bool(cell.get("manually_blocked", False))
 
@@ -296,10 +298,8 @@ def update_cell_blocked_state(cell):
         cell["is_blocked"] = True
     elif blocked_by_capacity:
         cell["is_blocked"] = True
-    elif was_blocked_by_capacity:
+    else:
         cell["is_blocked"] = manually_blocked
-    elif manually_blocked:
-        cell["is_blocked"] = True
 
     return cell["is_blocked"]
 

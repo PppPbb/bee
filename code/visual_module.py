@@ -62,9 +62,13 @@ def create_maya_scene(config=None, prior_cell_state=None):
     create_honeycomb_geometry(cells, hive_params["cell_size"], cell_depth)
     create_cloud_geometry(clouds, cloud_scale=cloud_scale)
     create_flower_geometry_on_clouds(clouds, flowers_per_cloud=flowers_per_cloud)
-    animation_end = int(visual_params.get("animation_end", 320))
-    drop_fall_frames = int(visual_params.get("drop_fall_frames", 64))
-    bee_frame_step = int(visual_params.get("bee_frame_step", 22))
+    frame_duration_multiplier = max(
+        0.01,
+        float(visual_params.get("frame_duration_multiplier", 4.0)),
+    )
+    animation_end = int(visual_params.get("animation_end", 320) * frame_duration_multiplier)
+    drop_fall_frames = int(visual_params.get("drop_fall_frames", 64) * frame_duration_multiplier)
+    bee_frame_step = int(visual_params.get("bee_frame_step", 22) * frame_duration_multiplier)
     scheduled_end = schedule_task_animation(
         bees,
         tasks,

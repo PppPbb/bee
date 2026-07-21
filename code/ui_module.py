@@ -65,6 +65,7 @@ def _read_parameters(cmds):
     drops = parameters["drops"]
     bees = parameters["bees"]
     visual = parameters.setdefault("visual", {})
+    simulation = parameters.setdefault("simulation", {})
 
     hive["size"] = _int_value(cmds, "hive_size")
     hive["cell_size"] = _float_value(cmds, "cell_size")
@@ -89,6 +90,7 @@ def _read_parameters(cmds):
     visual["drop_fall_frames"] = _int_value(cmds, "drop_fall_frames")
     visual["bee_frame_step"] = _int_value(cmds, "bee_frame_step")
     visual["show_paths"] = _bool_value(cmds, "show_paths")
+    simulation["cycle"] = SIMULATION_STEP
     return parameters
 
 
@@ -114,7 +116,17 @@ def _capture_cell_state(scene_data):
     """Keep resource and capped state between simulation steps."""
     if not scene_data:
         return None
-    fields = ("id", "type", "nectar", "pollen", "capacity", "is_blocked")
+    fields = (
+        "id",
+        "type",
+        "nectar",
+        "pollen",
+        "capacity",
+        "reserved_amount",
+        "is_blocked",
+        "blocked_by_capacity",
+        "queen_role",
+    )
     return [
         {field: cell[field] for field in fields if field in cell}
         for cell in scene_data.get("cells", [])
@@ -135,13 +147,14 @@ def _update_status(cmds):
 
     summary = LAST_SCENE_DATA["summary"]
     label = (
-        "Step {0} | Drops {1} | Queued {2} | Blocked {3} | Animated tasks {4}"
+        "Step {0} | Drops {1} | Queued {2} | Full {3} | Nectar {4:.2f} | Pollen {5:.2f}"
     ).format(
         SIMULATION_STEP,
         summary["drop_count"],
         summary.get("queued_task_count", 0),
-        summary.get("blocked_task_count", 0),
-        len(LAST_SCENE_DATA.get("animation_records", [])),
+        summary.get("full_storage_cell_count", 0),
+        summary.get("stored_nectar_total", 0.0),
+        summary.get("stored_pollen_total", 0.0),
     )
     _set_status(cmds, label)
 
@@ -155,6 +168,7 @@ def generate_from_ui(*_args):
     global LAST_SCENE_DATA, CURRENT_PARAMETERS, SIMULATION_STEP
     _ensure_controls(cmds)
     CURRENT_PARAMETERS = _read_parameters(cmds)
+    CURRENT_PARAMETERS.setdefault("simulation", {})["cycle"] = 0
     SIMULATION_STEP = 0
 
     _set_status(cmds, "Generating scene...")
@@ -207,7 +221,7 @@ def next_simulation_step(*_args):
     prior_cell_state = _capture_cell_state(LAST_SCENE_DATA)
     SIMULATION_STEP += 1
     CURRENT_PARAMETERS = copy.deepcopy(CURRENT_PARAMETERS)
-    CURRENT_PARAMETERS["drops"]["seed"] += 97
+    CURRENT_PARAMETERS.setdefault("simulation", {})["cycle"] = SIMULATION_STEP
     cmds.play(state=False)
     _set_status(cmds, "Building next step...")
     cmds.refresh(force=True)

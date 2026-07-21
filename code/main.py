@@ -5,6 +5,8 @@ from bee_task_module import (
     complete_task,
     create_bees,
     create_tasks_from_drops,
+    create_tasks_from_existing_cell_resources,
+    consume_stored_resources,
     select_task_for_bee,
     summarize_tasks,
 )
@@ -14,7 +16,13 @@ from cloud_resource_module import (
     map_drops_to_cells,
     summarize_drop_mapping,
 )
-from hive_module import calculate_neighbors, assign_cell_types, generate_hex_grid
+from hive_module import (
+    calculate_neighbors,
+    assign_cell_types,
+    generate_hex_grid,
+    storage_cell_is_full,
+    update_all_blocked_states,
+)
 
 try:
     from config import DEFAULT_INTEGRATION_PARAMETERS
@@ -55,6 +63,12 @@ FALLBACK_PARAMETERS = {
     },
     "tasks": {
         "max_tasks_to_complete": 999,
+    },
+    "resources": {
+        "consumption_per_cycle": 0.05,
+    },
+    "simulation": {
+        "cycle": 0,
     },
 }
 
@@ -144,9 +158,19 @@ def _apply_prior_cell_state(cells, prior_cell_state):
         state = state_by_id.get(cell["id"])
         if state is None:
             continue
-        for field in ("type", "nectar", "pollen", "capacity", "is_blocked"):
+        for field in (
+            "type",
+            "nectar",
+            "pollen",
+            "capacity",
+            "reserved_amount",
+            "is_blocked",
+            "blocked_by_capacity",
+            "queen_role",
+        ):
             if field in state:
                 cell[field] = state[field]
+    update_all_blocked_states(cells)
 
 
 def _assign_task_queues(bees, completed_tasks):
@@ -183,6 +207,9 @@ def run_simulation(parameters=None, prior_cell_state=None):
     drop_params = parameters["drops"]
     bee_params = parameters["bees"]
     task_params = parameters["tasks"]
+    resource_params = parameters.get("resources", {})
+    simulation_params = parameters.get("simulation", {})
+    cycle_number = int(simulation_params.get("cycle", 0))
 
     cells = generate_hex_grid(
         size=hive_params["size"],
@@ -198,12 +225,19 @@ def run_simulation(parameters=None, prior_cell_state=None):
         seed=hive_params["seed"],
     )
     _apply_prior_cell_state(cells, prior_cell_state)
+    consumed_resources = consume_stored_resources(
+        cells,
+        resource_params.get("consumption_per_cycle", 0.0),
+    )
 
     clouds = create_cloud_data(**cloud_params)
-    drops = generate_resource_drops(clouds, **drop_params)
+    effective_drop_params = dict(drop_params)
+    effective_drop_params["seed"] = int(drop_params.get("seed", 0)) + cycle_number * 97
+    drops = generate_resource_drops(clouds, **effective_drop_params)
     map_drops_to_cells(drops, cells)
 
-    tasks = create_tasks_from_drops(drops, cells)
+    tasks = create_tasks_from_existing_cell_resources(cells, cycle_number=cycle_number)
+    tasks.extend(create_tasks_from_drops(drops, cells))
     assign_paths_to_tasks(tasks, cells)
 
     for cell in cells:
@@ -226,6 +260,12 @@ def run_simulation(parameters=None, prior_cell_state=None):
     example_task = tasks_with_paths[0] if tasks_with_paths else None
     drop_summary = summarize_drop_mapping(drops)
     blocked_tasks = [task for task in tasks if not task.get("path")]
+    full_storage_cells = [
+        cell for cell in cells
+        if cell.get("type") in ("honey", "pollen") and storage_cell_is_full(cell)
+    ]
+    stored_nectar_total = sum(float(cell.get("nectar", 0.0)) for cell in cells)
+    stored_pollen_total = sum(float(cell.get("pollen", 0.0)) for cell in cells)
     resource_events = [
         task["resource_event"]
         for task in completed_tasks
@@ -241,16 +281,25 @@ def run_simulation(parameters=None, prior_cell_state=None):
         "completed_tasks": completed_tasks,
         "resource_events": resource_events,
         "summary": {
+            "cycle_number": cycle_number,
             "cell_count": len(cells),
             "cell_type_counts": count_cell_types(cells),
             "cloud_count": len(clouds),
             "drop_count": len(drops),
+            "new_drop_count": len(drops),
             "mapped_drop_count": drop_summary["mapped"],
             "task_count": len(tasks),
+            "tasks_created": len(tasks),
             "task_summary": summarize_tasks(tasks),
             "tasks_with_paths": len(tasks_with_paths),
             "blocked_task_count": len(blocked_tasks),
             "queued_task_count": len(completed_tasks),
+            "assigned_task_count": len(completed_tasks),
+            "completed_task_count": len(completed_tasks),
+            "full_storage_cell_count": len(full_storage_cells),
+            "stored_nectar_total": stored_nectar_total,
+            "stored_pollen_total": stored_pollen_total,
+            "consumed_resources": consumed_resources,
             "example_task_path": example_task.get("path") if example_task else [],
         },
     }
@@ -269,18 +318,24 @@ def print_summary(simulation_result):
 
     print("Cloud-Hive Bloomfield Integration Summary")
     print("------------------------------------")
+    print("Cycle:", summary.get("cycle_number", 0))
     print("Cells:", summary["cell_count"])
     print("Cell type counts:", summary["cell_type_counts"])
     print("Clouds:", summary["cloud_count"])
-    print("Drops:", summary["drop_count"])
+    print("New drops:", summary.get("new_drop_count", summary["drop_count"]))
     print("Mapped drops:", summary["mapped_drop_count"])
-    print("Tasks:", summary["task_count"])
+    print("Tasks created:", summary.get("tasks_created", summary["task_count"]))
     print("Task summary:", summary["task_summary"])
+    print("Tasks assigned:", summary.get("assigned_task_count", 0))
     print("Tasks with BFS paths:", summary["tasks_with_paths"])
     print("Example task path:", summary["example_task_path"])
 
     completed_tasks = simulation_result["completed_tasks"]
     print("Completed tasks:", len(completed_tasks))
+    print("Full storage cells:", summary.get("full_storage_cell_count", 0))
+    print("Stored nectar total:", round(summary.get("stored_nectar_total", 0.0), 3))
+    print("Stored pollen total:", round(summary.get("stored_pollen_total", 0.0), 3))
+    print("Consumed resources:", summary.get("consumed_resources", {}))
     if completed_tasks:
         print("First completed task:", completed_tasks[0])
 
