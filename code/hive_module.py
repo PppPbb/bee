@@ -1042,7 +1042,7 @@ def create_voxel_material(cmds, material_key):
                     spec.get("transmission", 0.0),
                 )
             if cmds.attributeQuery("emission", node=material_name, exists=True):
-                cmds.setAttr(material_name + ".emission", spec.get("emission", 0.0))
+                cmds.setAttr(material_name + ".emission", spec.get("emission", 0.14))
             if cmds.attributeQuery("emissionColor", node=material_name, exists=True):
                 cmds.setAttr(
                     material_name + ".emissionColor",
@@ -1052,7 +1052,7 @@ def create_voxel_material(cmds, material_key):
         elif node_type == "lambert":
             cmds.setAttr(material_name + ".color", *spec["color"], type="double3")
             if cmds.attributeQuery("incandescence", node=material_name, exists=True):
-                emission = max(0.0, float(spec.get("emission", 0.0)))
+                emission = max(0.0, float(spec.get("emission", 0.14)))
                 emission_color = spec.get("emission_color", spec["color"])
                 cmds.setAttr(
                     material_name + ".incandescence",
@@ -1071,7 +1071,7 @@ def create_voxel_material(cmds, material_key):
         if cmds.attributeQuery("transmission", node=material, exists=True):
             cmds.setAttr(material + ".transmission", spec.get("transmission", 0.0))
         if cmds.attributeQuery("emission", node=material, exists=True):
-            cmds.setAttr(material + ".emission", spec.get("emission", 0.0))
+            cmds.setAttr(material + ".emission", spec.get("emission", 0.14))
         if cmds.attributeQuery("emissionColor", node=material, exists=True):
             cmds.setAttr(
                 material + ".emissionColor",
@@ -1085,7 +1085,7 @@ def create_voxel_material(cmds, material_key):
         material = cmds.shadingNode("lambert", asShader=True, name=material_name)
         cmds.setAttr(material + ".color", *spec["color"], type="double3")
         if cmds.attributeQuery("incandescence", node=material, exists=True):
-            emission = max(0.0, float(spec.get("emission", 0.0)))
+            emission = max(0.0, float(spec.get("emission", 0.14)))
             emission_color = spec.get("emission_color", spec["color"])
             cmds.setAttr(
                 material + ".incandescence",

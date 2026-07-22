@@ -47,5 +47,6 @@ DEFAULT_INTEGRATION_PARAMETERS = {
         "drop_fall_frames": 64,
         "bee_frame_step": 22,
         "show_paths": True,
+        "render_background": True,
     },
 }

@@ -687,6 +687,7 @@ def _create_maya_material(cmds, material_name, color):
     if cmds.objExists(material_name):
         if cmds.attributeQuery("color", node=material_name, exists=True):
             cmds.setAttr(material_name + ".color", *color, type="double3")
+        _apply_lambert_fill(cmds, material_name, color)
         return material_name
 
     material = cmds.shadingNode("lambert", asShader=True, name=material_name)
@@ -697,7 +698,24 @@ def _create_maya_material(cmds, material_name, color):
         color[2],
         type="double3",
     )
+    _apply_lambert_fill(cmds, material, color)
     return material
+
+
+def _apply_lambert_fill(cmds, material, color):
+    """Add a mild unlit floor so stylized voxels never render near-black."""
+    if cmds.attributeQuery("ambientColor", node=material, exists=True):
+        cmds.setAttr(
+            material + ".ambientColor",
+            *(component * 0.18 for component in color),
+            type="double3",
+        )
+    if cmds.attributeQuery("incandescence", node=material, exists=True):
+        cmds.setAttr(
+            material + ".incandescence",
+            *(component * 0.08 for component in color),
+            type="double3",
+        )
 
 
 def _assign_maya_material(cmds, node, material):
@@ -1096,6 +1114,16 @@ def create_cloud_geometry(clouds, cloud_scale=1.0, voxel_pitch=None):
                 occupied_keys=occupied_keys,
             )
             if mesh:
+                # Floating resource clouds should not paint large, nearly black
+                # silhouettes across the honeycomb in Arnold renders.
+                for shape in cmds.listRelatives(mesh, shapes=True) or []:
+                    for shadow_attribute in ("castsShadows", "aiVisibleInShadow"):
+                        if cmds.attributeQuery(
+                            shadow_attribute,
+                            node=shape,
+                            exists=True,
+                        ):
+                            cmds.setAttr(shape + "." + shadow_attribute, 0)
                 created_meshes.append(mesh)
 
         cloud["maya_object"] = cloud_group
