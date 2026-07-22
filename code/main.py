@@ -11,6 +11,7 @@ from bee_task_module import (
     summarize_tasks,
 )
 from cloud_resource_module import (
+    calculate_hive_view_span,
     create_cloud_data,
     generate_resource_drops,
     map_drops_to_cells,
@@ -130,10 +131,19 @@ def complete_reachable_tasks(tasks, cells, max_tasks_to_complete):
 
         target_cell_id = task.get("path", [None])[-1]
         target_cell = next((cell for cell in cells if cell["id"] == target_cell_id), None)
+        source_cell = next(
+            (cell for cell in cells if cell["id"] == task.get("source_cell")),
+            None,
+        )
         resource_field = task.get("resource_type")
         before_amount = (
             float(target_cell.get(resource_field, 0.0))
             if target_cell is not None and resource_field in ("nectar", "pollen")
+            else 0.0
+        )
+        source_before_amount = (
+            float(source_cell.get(resource_field, 0.0))
+            if source_cell is not None and resource_field in ("nectar", "pollen")
             else 0.0
         )
 
@@ -147,6 +157,8 @@ def complete_reachable_tasks(tasks, cells, max_tasks_to_complete):
                 "amount": moved_amount,
                 "before_amount": before_amount,
                 "after_amount": before_amount + moved_amount,
+                "source_before_amount": source_before_amount,
+                "source_after_amount": max(0.0, source_before_amount - moved_amount),
                 "became_capped": bool(task.get("became_capped")),
             }
             completed_tasks.append(task)
@@ -235,20 +247,33 @@ def run_simulation(parameters=None, prior_cell_state=None):
         resource_params.get("consumption_per_cycle", 0.0),
     )
 
-    clouds = create_cloud_data(**cloud_params)
+    # Visual animation starts from the persistent hive state before this
+    # simulation step's drops land. Landing and transport deltas are revealed
+    # later at their actual animation frames.
+    for cell in cells:
+        cell["initial_type"] = cell.get("type")
+        cell["initial_nectar"] = float(cell.get("nectar", 0.0))
+        cell["initial_pollen"] = float(cell.get("pollen", 0.0))
+
+    visual_params = parameters.get("visual", {})
+    clouds = create_cloud_data(
+        **cloud_params,
+        hive_visual_span=calculate_hive_view_span(
+            cells,
+            hive_params["cell_size"],
+        ),
+        base_visual_scale=visual_params.get("cloud_scale", 0.85),
+    )
     effective_drop_params = dict(drop_params)
-    effective_drop_params["seed"] = int(drop_params.get("seed", 0)) + cycle_number * 97
+    effective_drop_params["seed"] = (
+        int(drop_params.get("seed", 0)) + cycle_number * 97
+    )
     drops = generate_resource_drops(clouds, **effective_drop_params)
     map_drops_to_cells(drops, cells)
 
     tasks = create_tasks_from_existing_cell_resources(cells, cycle_number=cycle_number)
     tasks.extend(create_tasks_from_drops(drops, cells))
     assign_paths_to_tasks(tasks, cells)
-
-    for cell in cells:
-        cell["initial_type"] = cell.get("type")
-        cell["initial_nectar"] = float(cell.get("nectar", 0.0))
-        cell["initial_pollen"] = float(cell.get("pollen", 0.0))
 
     bees = create_bees(
         bee_count=bee_params["bee_count"],

@@ -4,7 +4,7 @@ import math
 import re
 from collections import deque
 
-from hive_module import get_cell_map, update_all_blocked_states
+from hive_module import create_voxel_material, get_cell_map, update_all_blocked_states
 
 
 def _sanitize_maya_name_component(value):
@@ -360,11 +360,25 @@ def create_tasks_from_drops(drops, cells):
             continue
 
         drop["mapped_cell_type"] = source_cell.get("type")
+        resource_field = _resource_field(drop.get("resource_type"))
+        landing_before_amount = (
+            float(source_cell.get(resource_field, 0.0))
+            if resource_field is not None
+            else 0.0
+        )
 
         if validate_resource_cell(drop, source_cell):
             drop["validation_result"] = "matched"
             deposited_amount = deposit_resource(drop, source_cell)
             drop["direct_storage_amount"] = deposited_amount
+            drop["landing_cell_id"] = source_cell["id"]
+            drop["landing_deposited_amount"] = deposited_amount
+            drop["landing_before_amount"] = landing_before_amount
+            drop["landing_after_amount"] = landing_before_amount + deposited_amount
+            drop["landing_is_valid"] = True
+            drop["landing_became_full"] = bool(
+                source_cell.get("blocked_by_capacity")
+            )
             remaining_amount = max(0.0, float(drop.get("amount", 0.0)) - deposited_amount)
             if remaining_amount <= 0.000001:
                 continue
@@ -387,6 +401,15 @@ def create_tasks_from_drops(drops, cells):
         deposited_amount = 0.0
         if not source_cell.get("is_blocked"):
             deposited_amount = deposit_resource(drop, source_cell)
+
+        drop["landing_cell_id"] = source_cell["id"]
+        drop["landing_deposited_amount"] = deposited_amount
+        drop["landing_before_amount"] = landing_before_amount
+        drop["landing_after_amount"] = landing_before_amount + deposited_amount
+        drop["landing_is_valid"] = False
+        drop["landing_became_full"] = bool(
+            source_cell.get("blocked_by_capacity")
+        )
 
         task = create_transport_task(drop, source_cell)
         drop["task_id"] = task["id"]
@@ -601,6 +624,7 @@ def complete_task(task, cells):
     else:
         movable_amount = requested_amount
 
+    target_was_full = bool(target_cell.get("blocked_by_capacity"))
     release_storage_reservation(target_cell, task.get("reserved_amount", 0.0))
     deposited_amount = deposit_resource_to_cell(
         target_cell,
@@ -614,12 +638,13 @@ def complete_task(task, cells):
         )
 
     update_all_blocked_states(cells)
-    became_capped = False
+    target_became_full = bool(target_cell.get("blocked_by_capacity"))
+    became_capped = target_became_full and not target_was_full
 
     task["completed_amount"] = deposited_amount
     task["target_cell"] = target_cell["id"]
     task["became_capped"] = became_capped
-    task["target_became_full"] = bool(target_cell.get("blocked_by_capacity"))
+    task["target_became_full"] = target_became_full
     task["reserved_amount"] = 0.0
 
     remaining_requested = max(0.0, requested_amount - deposited_amount)
@@ -771,6 +796,195 @@ def _assign_maya_material(cmds, node, material):
     cmds.select(clear=True)
 
 
+def _distance_3d(pos_a, pos_b):
+    """Measure full three-dimensional distance between two positions."""
+    return math.sqrt(sum(
+        (float(pos_a[index]) - float(pos_b[index])) ** 2
+        for index in range(3)
+    ))
+
+
+def calculate_bee_frames_per_unit(tasks, cells, frame_step=22):
+    """Convert the UI's frames-per-cell value to frames per world unit.
+
+    Adjacent honeycomb centers are equally spaced, so their median distance is
+    a stable scene-scale reference. The resulting value can then time cloud,
+    vertical, and hive movement with one consistent world-space speed.
+    """
+    cell_map = get_cell_map(cells)
+    path_distances = []
+    for task in tasks:
+        path = task.get("path") or []
+        for index in range(1, len(path)):
+            previous_cell = cell_map.get(path[index - 1])
+            current_cell = cell_map.get(path[index])
+            if previous_cell is None or current_cell is None:
+                continue
+            distance = _distance_3d(
+                previous_cell["position"],
+                current_cell["position"],
+            )
+            if distance > 0.000001:
+                path_distances.append(distance)
+
+    if path_distances:
+        sorted_distances = sorted(path_distances)
+        middle = len(sorted_distances) // 2
+        if len(sorted_distances) % 2:
+            reference_distance = sorted_distances[middle]
+        else:
+            reference_distance = (
+                sorted_distances[middle - 1] + sorted_distances[middle]
+            ) * 0.5
+    else:
+        reference_distance = 1.0
+    return max(1.0, float(frame_step) / max(0.000001, reference_distance))
+
+
+def _append_constant_speed_waypoint(
+    waypoints,
+    frames,
+    position,
+    frames_per_unit,
+):
+    """Append a waypoint whose frame is proportional to traveled distance."""
+    point = tuple(float(value) for value in position)
+    if not waypoints:
+        waypoints.append(point)
+        return
+    distance = _distance_3d(waypoints[-1], point)
+    duration = max(1, int(round(distance * float(frames_per_unit))))
+    waypoints.append(point)
+    frames.append(frames[-1] + duration)
+
+
+def plan_bee_collection_cycle(
+    bee,
+    task,
+    cells,
+    clouds,
+    drops,
+    start_position,
+    frame_start=1,
+    frames_per_unit=12.0,
+    fall_duration=64,
+    lane_offset=0.0,
+):
+    """Plan one continuous task route from a worker's previous endpoint.
+
+    Natural-drop and carryover transport stays on the honeycomb surface: the
+    worker moves to the landed source cell and then follows the capacity-aware
+    BFS path. Only explicit collection tasks may leave the hive surface to
+    visit a cloud before returning to the source cell and following the path.
+    Movement duration remains proportional to world-space distance, and the
+    worker finishes at the real delivery endpoint instead of a shared origin.
+    """
+    path = task.get("path") or []
+    if not path:
+        return None
+
+    drop_id = task.get("id", "")
+    if drop_id.startswith("task_"):
+        drop_id = drop_id[5:]
+    drop = next((item for item in drops if item.get("id") == drop_id), None)
+    cell_map = get_cell_map(cells)
+    source_cell = cell_map.get(task.get("source_cell"))
+    if source_cell is None:
+        return None
+
+    source_cloud_id = task.get("source_cloud")
+    if source_cloud_id is None and drop is not None:
+        source_cloud_id = drop.get("source_cloud")
+    cloud = next(
+        (item for item in clouds if item.get("id") == source_cloud_id),
+        None,
+    )
+
+    waypoints = [tuple(float(value) for value in start_position)]
+    frames = [int(frame_start)]
+    drop_start = None
+    drop_end = None
+    task_origin = task.get("origin", "natural_drop")
+    is_cloud_collection = task_origin in ("collection", "collection_demo")
+    surface_height = 0.75
+    source_x, source_y, source_z = source_cell["position"]
+    source_hover = (source_x, source_y + surface_height, source_z)
+
+    # Reaching the source is an on-hive move for every task. Collection tasks
+    # then make a deliberate surface-to-cloud flight and return to this point.
+    _append_constant_speed_waypoint(
+        waypoints,
+        frames,
+        source_hover,
+        frames_per_unit,
+    )
+
+    if is_cloud_collection and cloud is not None:
+        cloud_x, cloud_y, cloud_z = cloud["position"]
+        cloud_hover = (
+            cloud_x + float(lane_offset) * 0.35,
+            cloud_y + 0.55,
+            cloud_z,
+        )
+        _append_constant_speed_waypoint(
+            waypoints,
+            frames,
+            cloud_hover,
+            frames_per_unit,
+        )
+        collection_hold_frames = max(5, int(round(frames_per_unit * 0.40)))
+        waypoints.append(cloud_hover)
+        frames.append(frames[-1] + collection_hold_frames)
+        pickup_waypoint_index = len(waypoints) - 1
+        _append_constant_speed_waypoint(
+            waypoints,
+            frames,
+            source_hover,
+            frames_per_unit,
+        )
+    else:
+        if drop is not None:
+            # Natural falling is a separate visual. The worker waits at the
+            # mapped cell only when it arrives before that drop has landed.
+            drop_start = int(frame_start)
+            drop_end = drop_start + max(1, int(fall_duration))
+            if frames[-1] < drop_end:
+                waypoints.append(source_hover)
+                frames.append(drop_end)
+        pickup_hold_frames = max(3, int(round(frames_per_unit * 0.25)))
+        waypoints.append(source_hover)
+        frames.append(frames[-1] + pickup_hold_frames)
+        pickup_waypoint_index = len(waypoints) - 1
+
+    for cell_id in path[1:]:
+        cell = cell_map.get(cell_id)
+        if cell is None:
+            continue
+        x, y, z = cell["position"]
+        _append_constant_speed_waypoint(
+            waypoints,
+            frames,
+            (x, y + 0.75, z),
+            frames_per_unit,
+        )
+
+    return {
+        "waypoints": waypoints,
+        "frames": frames,
+        "pickup_waypoint_index": pickup_waypoint_index,
+        "delivery_waypoint_index": len(waypoints) - 1,
+        "drop_start_frame": drop_start,
+        "drop_end_frame": drop_end,
+        "start_position": waypoints[0],
+        "end_position": waypoints[-1],
+        "frames_per_unit": float(frames_per_unit),
+        "movement_mode": (
+            "cloud_collection" if is_cloud_collection and cloud is not None
+            else "on_hive_transport"
+        ),
+    }
+
+
 def create_bee_geometry(bees, bee_scale=1.0):
     """Create simple stylized Maya bee objects.
 
@@ -800,8 +1014,17 @@ def create_bee_geometry(bees, bee_scale=1.0):
     for bee_index, bee in enumerate(bees):
         bee_group = cmds.group(empty=True, name="{0}_GRP".format(bee["id"]))
         cmds.parent(bee_group, root_group)
-        base_x, base_y, base_z = bee["position"]
-        base_x += (bee_index - (len(bees) - 1) * 0.5) * 0.55 * bee_scale
+        default_x, default_y, default_z = bee["position"]
+        default_x += (bee_index - (len(bees) - 1) * 0.5) * 0.55 * bee_scale
+        base_x, base_y, base_z = bee.get(
+            "animation_start_position",
+            (default_x, default_y, default_z),
+        )
+        cmds.xform(
+            bee_group,
+            translation=(base_x, base_y, base_z),
+            worldSpace=True,
+        )
 
         body, _body_shape = cmds.polyCube(
             width=0.52 * bee_scale,
@@ -809,8 +1032,8 @@ def create_bee_geometry(bees, bee_scale=1.0):
             depth=0.30 * bee_scale,
             name="{0}_body".format(bee["id"]),
         )
-        cmds.xform(body, translation=(base_x, base_y, base_z), worldSpace=True)
         cmds.parent(body, bee_group)
+        cmds.setAttr(body + ".translate", 0.0, 0.0, 0.0, type="double3")
         _assign_maya_material(cmds, body, body_material)
 
         for stripe_index, offset_x in enumerate((-0.12, 0.12)):
@@ -820,12 +1043,14 @@ def create_bee_geometry(bees, bee_scale=1.0):
                 depth=0.315 * bee_scale,
                 name="{0}_stripe_{1:02d}".format(bee["id"], stripe_index),
             )
-            cmds.xform(
-                stripe,
-                translation=(base_x + offset_x * bee_scale, base_y, base_z),
-                worldSpace=True,
-            )
             cmds.parent(stripe, bee_group)
+            cmds.setAttr(
+                stripe + ".translate",
+                offset_x * bee_scale,
+                0.0,
+                0.0,
+                type="double3",
+            )
             _assign_maya_material(cmds, stripe, stripe_material)
 
         for wing_index, offset_z in enumerate((-0.16, 0.16)):
@@ -835,12 +1060,14 @@ def create_bee_geometry(bees, bee_scale=1.0):
                 depth=0.20 * bee_scale,
                 name="{0}_wing_{1:02d}".format(bee["id"], wing_index),
             )
-            cmds.xform(
-                wing,
-                translation=(base_x, base_y + 0.18 * bee_scale, base_z + offset_z * bee_scale),
-                worldSpace=True,
-            )
             cmds.parent(wing, bee_group)
+            cmds.setAttr(
+                wing + ".translate",
+                0.0,
+                0.18 * bee_scale,
+                offset_z * bee_scale,
+                type="double3",
+            )
             _assign_maya_material(cmds, wing, wing_material)
 
         bee["maya_object"] = bee_group
@@ -858,17 +1085,23 @@ def animate_bee_collection_cycle(
     frame_step=10,
     bee_index=0,
 ):
-    """Animate one natural/carryover transport task on the honeycomb surface.
+    """Animate one task continuously from the bee's prior endpoint.
 
-    The task path remains the capacity-aware BFS path assigned to the task.
-    Natural falling is visualized separately; a transport bee starts at the
-    landed source cell and stays on-hive while carrying the resource.
+    Natural and carryover transport follows the task's capacity-aware BFS path
+    on the honeycomb. Explicit collection tasks alone may include the planned
+    hive-to-cloud flight segment. Moving segments use distance-based frames and
+    linear Maya tangents.
     """
     import maya.cmds as cmds
 
     bee_object = bee.get("maya_object")
     path = task.get("path", []) if task else []
     if not bee_object or not cmds.objExists(bee_object) or not path:
+        if task is not None and path:
+            fallback_frame = task.get("planned_delivery_frame")
+            if fallback_frame is not None:
+                task["delivery_frame"] = int(fallback_frame)
+            task["visual_animation_status"] = "skipped"
         return []
 
     def animate_path_only_task():
@@ -876,49 +1109,62 @@ def animate_bee_collection_cycle(
         frames = animate_bee_on_path(bee, task, cells, frame_start, frame_step)
         task["payload_object"] = None
         if not frames:
-            task["delivery_frame"] = None
+            fallback_frame = task.get("planned_delivery_frame")
+            if fallback_frame is None:
+                fallback_frame = frame_start + max(0, len(path) - 1) * frame_step
+            task["delivery_frame"] = int(fallback_frame)
+            task["visual_animation_status"] = "skipped"
             cmds.warning(
                 "Cloud-Hive Bloomfield: task '{0}' could not create path "
-                "animation keyframes.".format(task.get("id", "<unknown>"))
+                "animation keyframes; using delivery frame {1}.".format(
+                    task.get("id", "<unknown>"),
+                    task["delivery_frame"],
+                )
             )
             return frames
 
         task["delivery_frame"] = int(frames[-1])
+        task["pickup_frame"] = int(frames[0])
+        task["visual_animation_status"] = "path_only"
         bee["animation_frames"] = frames
         bee["resource_type"] = task.get("resource_type")
+        bee["animation_current_position"] = list(bee.get("position", []))
         return frames
 
     drop_id = task.get("id", "")
     if drop_id.startswith("task_"):
         drop_id = drop_id[5:]
     drop = next((item for item in drops if item.get("id") == drop_id), None)
-    if drop is None:
+    plan = task.get("animation_plan")
+    if not plan:
+        lane_offset = (bee_index - 1) * 0.55
+        start_position = bee.get(
+            "animation_current_position",
+            bee.get("animation_start_position", bee.get("position", [0.0, 0.8, 0.0])),
+        )
+        plan = plan_bee_collection_cycle(
+            bee,
+            task,
+            cells,
+            clouds,
+            drops,
+            start_position=start_position,
+            frame_start=frame_start,
+            frames_per_unit=calculate_bee_frames_per_unit(
+                [task],
+                cells,
+                frame_step=frame_step,
+            ),
+            fall_duration=max(24, int(frame_step) * 2),
+            lane_offset=lane_offset,
+        )
+    if not plan:
         return animate_path_only_task()
 
-    cell_map = get_cell_map(cells)
-    source_cell = cell_map.get(task.get("source_cell"))
-    if source_cell is None:
-        return animate_path_only_task()
-
-    surface_height = 0.62
-    waypoints = []
-    for cell_id in path:
-        cell = cell_map.get(cell_id)
-        if cell is not None:
-            x, y, z = cell["position"]
-            waypoints.append((x, y + surface_height, z))
-
-    if not waypoints:
-        return animate_path_only_task()
-
-    delivery_waypoint_index = len(waypoints) - 1
-
-    drop_start = int(drop.get("animation_start_frame", frame_start + frame_step))
-    drop_end = int(drop.get("animation_end_frame", drop_start + frame_step * 2))
-    waypoint_frames = [
-        drop_end + index * int(frame_step)
-        for index in range(len(waypoints))
-    ]
+    waypoints = plan["waypoints"]
+    waypoint_frames = plan["frames"]
+    delivery_waypoint_index = int(plan["delivery_waypoint_index"])
+    pickup_waypoint_index = int(plan["pickup_waypoint_index"])
 
     frames = []
     for frame, position in zip(waypoint_frames, waypoints):
@@ -927,14 +1173,28 @@ def animate_bee_collection_cycle(
         cmds.setKeyframe(bee_object, attribute="translate", time=frame)
         frames.append(frame)
 
-    resource_type = drop.get("resource_type", "nectar")
-    pickup_frame = frames[0]
-    delivery_frame = frames[delivery_waypoint_index]
+    if len(frames) >= 2:
+        cmds.keyTangent(
+            bee_object,
+            attribute=("translateX", "translateY", "translateZ"),
+            time=(frames[0], frames[-1]),
+            inTangentType="linear",
+            outTangentType="linear",
+        )
+
+    resource_type = task.get("resource_type") or (
+        drop.get("resource_type") if drop is not None else "nectar"
+    )
+    pickup_frame = int(frames[pickup_waypoint_index])
+    delivery_frame = int(frames[delivery_waypoint_index])
     bee["animation_frames"] = frames
+    bee["animation_current_position"] = list(plan["end_position"])
+    bee["position"] = list(plan["end_position"])
     bee["resource_type"] = resource_type
-    bee["position"] = list(waypoints[-1])
     task["delivery_frame"] = delivery_frame
+    task["pickup_frame"] = pickup_frame
     task["payload_object"] = None
+    task["visual_animation_status"] = plan.get("movement_mode", "planned")
 
     safe_bee_id = _sanitize_maya_name_component(bee.get("id", "bee"))
     safe_task_id = _sanitize_maya_name_component(task.get("id", "task"))
@@ -944,15 +1204,22 @@ def animate_bee_collection_cycle(
         safe_task_id,
         safe_resource_type,
     )
-    payload_material = _create_maya_material(
-        cmds,
-        "chm_bee_payload_{0}_MAT".format(safe_resource_type),
-        (1.0, 0.62, 0.02) if resource_type == "nectar" else (1.0, 0.35, 0.08),
-    )
+    if resource_type == "nectar":
+        payload_material = create_voxel_material(cmds, "nectar_glow")
+        payload_width = 0.20
+        payload_height = 0.24
+    else:
+        payload_material = _create_maya_material(
+            cmds,
+            "chm_bee_payload_{0}_MAT".format(safe_resource_type),
+            (1.0, 0.35, 0.08),
+        )
+        payload_width = 0.13
+        payload_height = 0.13
     payload_nodes = cmds.polyCube(
-        width=0.13,
-        height=0.13,
-        depth=0.13,
+        width=payload_width,
+        height=payload_height,
+        depth=payload_width,
         name=payload_name,
     )
     payload = payload_nodes[0] if payload_nodes else None
@@ -1066,6 +1333,15 @@ def animate_bee_on_path(bee, task, cells, frame_start=1, frame_step=12):
         frames.append(frame)
         bee["position"] = [x, y + surface_height, z]
 
+    if len(frames) >= 2:
+        cmds.keyTangent(
+            bee_object,
+            attribute=("translateX", "translateY", "translateZ"),
+            time=(frames[0], frames[-1]),
+            inTangentType="linear",
+            outTangentType="linear",
+        )
+
     return frames
 
 
@@ -1091,12 +1367,12 @@ def create_task_path_visuals(tasks, cells):
     if not cmds.objExists(root_group):
         cmds.group(empty=True, name=root_group)
 
-    path_material = _create_maya_material(cmds, "chm_task_path_cyan_MAT", (0.0, 0.95, 1.0))
     marker_material = _create_maya_material(cmds, "chm_task_marker_white_MAT", (0.92, 0.96, 1.0))
     start_material = _create_maya_material(cmds, "chm_task_start_red_MAT", (1.0, 0.08, 0.04))
     target_material = _create_maya_material(cmds, "chm_task_target_green_MAT", (0.08, 1.0, 0.28))
 
     for task in tasks:
+        safe_task_id = _sanitize_maya_name_component(task.get("id", "task"))
         points = []
         for cell_id in task.get("path", []):
             cell = cell_map.get(cell_id)
@@ -1112,10 +1388,9 @@ def create_task_path_visuals(tasks, cells):
             curve = cmds.curve(
                 d=1,
                 p=points,
-                name="{0}_path_CRV".format(task["id"]),
+                name="{0}_path_CRV".format(safe_task_id),
             )
             cmds.parent(curve, root_group)
-            _assign_maya_material(cmds, curve, path_material)
             curve_shapes = cmds.listRelatives(curve, shapes=True) or []
             for curve_shape in curve_shapes:
                 if cmds.attributeQuery("lineWidth", node=curve_shape, exists=True):
@@ -1128,7 +1403,7 @@ def create_task_path_visuals(tasks, cells):
         for index, point in enumerate(points):
             marker, _shape = cmds.polySphere(
                 radius=0.15,
-                name="{0}_path_marker_{1:02d}".format(task["id"], index),
+                name="{0}_path_marker_{1:02d}".format(safe_task_id, index),
             )
             cmds.xform(marker, translation=point, worldSpace=True)
             cmds.parent(marker, root_group)

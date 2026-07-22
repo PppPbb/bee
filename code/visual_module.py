@@ -1,19 +1,30 @@
 """Maya visualization layer for the Cloud-Hive Meadow MVP."""
 
+import copy
 import math
 import random
 
 from bee_task_module import (
     animate_bee_collection_cycle,
+    calculate_bee_frames_per_unit,
     create_bee_geometry,
     create_task_path_visuals,
+    plan_bee_collection_cycle,
 )
 from cloud_resource_module import (
     create_cloud_geometry,
     create_drop_particles,
     create_flower_geometry_on_clouds,
 )
-from hive_module import create_honeycomb_geometry
+from hive_module import (
+    create_honeycomb_geometry,
+    create_merged_voxel_mesh,
+    create_voxel_cube_instances,
+    create_voxel_material,
+    ensure_voxel_cube_prototype,
+    get_voxel_dimensions,
+    hex_voxel_layer_keys,
+)
 from main import load_parameters, run_simulation
 
 
@@ -57,6 +68,19 @@ DEMO_VISUAL_GROUPS = {
 }
 
 
+def _maya_safe_name_component(value):
+    """Return a Maya-safe node-name component without changing data ids."""
+    safe_value = "".join(
+        character if character.isalnum() or character == "_" else "_"
+        for character in str(value)
+    )
+    if not safe_value:
+        return "unnamed"
+    if safe_value[0].isdigit():
+        return "n_{0}".format(safe_value)
+    return safe_value
+
+
 def create_maya_scene(config=None, prior_cell_state=None):
     """Create the first Maya visualization MVP for Cloud-Hive Meadow.
 
@@ -94,12 +118,29 @@ def create_maya_scene(config=None, prior_cell_state=None):
         max(cloud_params["scene_radius"] * 1.8, hive_params["size"] * hive_params["cell_size"] * 3.0),
     )
     cell_depth = visual_params.get("cell_depth", 0.35)
+    voxel_density = int(visual_params.get("voxel_density", 14))
     cloud_scale = visual_params.get("cloud_scale", 0.85)
     flowers_per_cloud = visual_params.get("flowers_per_cloud", 5)
     bee_scale = visual_params.get("bee_scale", 1.0)
     show_paths = visual_params.get("show_paths", True)
-    create_honeycomb_geometry(cells, hive_params["cell_size"], cell_depth)
-    create_cloud_geometry(clouds, cloud_scale=cloud_scale)
+    create_honeycomb_geometry(
+        cells,
+        hive_params["cell_size"],
+        cell_depth,
+        voxel_density=voxel_density,
+        seed=hive_params.get("seed", 42),
+    )
+    generated_pitch = next(
+        (cell.get("voxel_pitch") for cell in cells if cell.get("voxel_pitch")),
+        None,
+    )
+    if generated_pitch:
+        voxel_density = int(round(float(hive_params["cell_size"]) / generated_pitch))
+    create_cloud_geometry(
+        clouds,
+        cloud_scale=cloud_scale,
+        voxel_pitch=generated_pitch,
+    )
     create_flower_geometry_on_clouds(clouds, flowers_per_cloud=flowers_per_cloud)
     create_drop_particles(drops)
     frame_duration_multiplier = max(
@@ -113,10 +154,22 @@ def create_maya_scene(config=None, prior_cell_state=None):
         bees,
         tasks,
         drops,
+        cells,
+        clouds,
         fall_duration=drop_fall_frames,
         frame_step=bee_frame_step,
         start_frame=LEGACY_ANIMATION_START,
     )
+    stage_one_start, stage_one_end = DEMO_STAGE_BASE_RANGES[1]
+    for drop_index, drop in enumerate(drops):
+        drop.setdefault(
+            "animation_start_frame",
+            stage_one_start + (drop_index % 6) * 2,
+        )
+        drop.setdefault(
+            "animation_end_frame",
+            stage_one_end - ((len(drops) - drop_index - 1) % 4),
+        )
     animation_end = max(animation_end, scheduled_end)
     # The compact Stage 1 transition uses the existing landing markers. Keep
     # the legacy falling group present for stable group bookkeeping without
@@ -148,10 +201,12 @@ def create_maya_scene(config=None, prior_cell_state=None):
     )
     resource_visuals = create_cell_resource_visuals(
         cells,
+        drops,
         simulation["resource_events"],
         animation_records,
         cell_size=hive_params["cell_size"],
         cell_depth=cell_depth,
+        voxel_density=voxel_density,
     )
     blocked_visuals = create_blocked_task_visuals(
         tasks,
@@ -206,6 +261,7 @@ def create_maya_scene(config=None, prior_cell_state=None):
         cells=cells,
         resource_events=simulation["resource_events"],
         bees=bees,
+        tasks=tasks,
         bee_base_transforms=bee_base_transforms,
         path_visuals=path_visuals,
         blocked_visuals=blocked_visuals,
@@ -236,9 +292,17 @@ def create_maya_scene(config=None, prior_cell_state=None):
         camera_setup["camera"],
         fallback_radius=ground_radius,
     )
+    render_background = None
+    if visual_params.get("render_background", True):
+        render_background = create_render_background(
+            camera_setup["camera"],
+            camera_setup["camera_shape"],
+            scene_radius=ground_radius,
+        )
     _parent_known_scene_groups(additional_groups=[cycle_group])
 
     scene_data = {
+        "parameters": copy.deepcopy(parameters),
         "cells": cells,
         "clouds": clouds,
         "drops": drops,
@@ -267,6 +331,8 @@ def create_maya_scene(config=None, prior_cell_state=None):
         "demo_playback_ranges": playback_ranges,
         "animation_full_range": (1, full_animation_end),
         "demo_stage": 0,
+        "camera_setup": camera_setup,
+        "render_background": render_background,
     }
     apply_demo_stage(scene_data, 0)
 
@@ -294,50 +360,83 @@ def schedule_task_animation(
     bees,
     tasks,
     drops,
+    cells,
+    clouds,
     fall_duration=64,
     frame_step=22,
     start_frame=1,
 ):
-    """Lay out each worker's complete task queue on one Maya timeline."""
+    """Plan continuous bee queues at one constant world-space speed.
+
+    The optional start frame keeps the full worker animation outside the compact
+    seven-stage presentation timeline. Path-only carryover tasks use the same
+    route planner and always receive a numeric delivery frame.
+    """
     task_by_id = {task["id"]: task for task in tasks}
     drop_by_id = {drop["id"]: drop for drop in drops}
-    latest_frame = max(1, int(start_frame))
+    safe_start = max(1, int(start_frame))
+    latest_frame = safe_start
+    frames_per_unit = calculate_bee_frames_per_unit(
+        tasks,
+        cells,
+        frame_step=frame_step,
+    )
 
     for bee_index, bee in enumerate(bees):
-        cursor = max(1, int(start_frame)) + bee_index * 6
+        lane_offset = (
+            bee_index - (len(bees) - 1) * 0.5
+        ) * 0.55
+        initial_x, initial_y, initial_z = bee.get("position", [0.0, 0.8, 0.0])
+        current_position = (
+            initial_x + lane_offset,
+            initial_y,
+            initial_z,
+        )
+        bee["animation_start_position"] = list(current_position)
+        cursor = safe_start + bee_index * 6
         for task_id in bee.get("task_queue", []):
             task = task_by_id.get(task_id)
             if task is None or not task.get("path"):
                 continue
             drop_id = task_id[5:] if task_id.startswith("task_") else task_id
             drop = drop_by_id.get(drop_id)
-            if drop is None:
-                delivery_frame = cursor + max(0, len(task["path"]) - 1) * int(frame_step)
-                task["animation_frame_start"] = int(cursor)
-                task["planned_delivery_frame"] = int(delivery_frame)
-                task["delivery_frame"] = int(delivery_frame)
-                cursor = delivery_frame + (2 * int(frame_step))
-                latest_frame = max(latest_frame, cursor)
+            plan = plan_bee_collection_cycle(
+                bee,
+                task,
+                cells,
+                clouds,
+                drops,
+                start_position=current_position,
+                frame_start=cursor,
+                frames_per_unit=frames_per_unit,
+                fall_duration=fall_duration,
+                lane_offset=lane_offset,
+            )
+            if not plan:
                 continue
-
-            drop_start = cursor
-            drop_end = drop_start + max(24, int(fall_duration))
-            delivery_frame = drop_end + max(0, len(task["path"]) - 1) * int(frame_step)
-            return_frame = delivery_frame + int(frame_step)
-
-            drop["animation_start_frame"] = drop_start
-            drop["animation_end_frame"] = drop_end
-            task["animation_frame_start"] = drop_end
-            task["planned_delivery_frame"] = delivery_frame
-            task["delivery_frame"] = int(delivery_frame)
-            cursor = return_frame + int(frame_step)
+            task["animation_plan"] = plan
+            task["animation_frame_start"] = plan["frames"][0]
+            task["planned_delivery_frame"] = plan["frames"][
+                plan["delivery_waypoint_index"]
+            ]
+            task["delivery_frame"] = int(task["planned_delivery_frame"])
+            if drop is not None and plan.get("drop_start_frame") is not None:
+                drop["animation_start_frame"] = plan["drop_start_frame"]
+            if drop is not None and plan.get("drop_end_frame") is not None:
+                drop["animation_end_frame"] = plan["drop_end_frame"]
+            current_position = plan["end_position"]
+            # A short stationary beat separates jobs without teleporting or
+            # returning the worker to a shared origin.
+            cursor = plan["frames"][-1] + max(3, int(round(frame_step * 0.25)))
             latest_frame = max(latest_frame, cursor)
+
+        bee["animation_end_position"] = list(current_position)
 
     return latest_frame
 
 
 def animate_assigned_bees(bees, tasks, cells, clouds, drops, frame_step=22):
-    """Animate every queued Yichen task, including return-to-idle movement."""
+    """Animate every queued task as one continuous per-worker flight chain."""
     task_by_id = {task["id"]: task for task in tasks}
     records = []
     for index, bee in enumerate(bees):
@@ -360,6 +459,7 @@ def animate_assigned_bees(bees, tasks, cells, clouds, drops, frame_step=22):
                 "task_id": task["id"],
                 "bfs_path": list(task["path"]),
                 "frames": frames,
+                "pickup_frame": task.get("pickup_frame"),
                 "delivery_frame": task.get("delivery_frame"),
             })
     return records
@@ -1004,6 +1104,7 @@ def author_demo_stage_transitions(
     cells,
     resource_events,
     bees,
+    tasks,
     bee_base_transforms,
     path_visuals,
     blocked_visuals,
@@ -1084,7 +1185,19 @@ def author_demo_stage_transitions(
         stage_four_end,
         peak_scale=1.45,
     )
+    stage_four_crawl = _key_stage_four_bee_crawl(
+        cmds,
+        bees,
+        tasks,
+        cells,
+        bee_base_transforms,
+        stage_four_start,
+        stage_four_end,
+        stage_ranges[5][0],
+    )
     stage_objects[4].extend(list(path_visuals) + list(bee_selection_visuals))
+    if stage_four_crawl:
+        stage_objects[4].append(stage_four_crawl["bee_object"])
 
     stage_five_start, stage_five_end = stage_ranges[5]
     trigger_nodes = _group_transform_children(
@@ -1181,6 +1294,7 @@ def author_demo_stage_transitions(
     return {
         "stage_objects": stage_objects,
         "keyed_object_count": sum(len(nodes) for nodes in stage_objects.values()),
+        "stage_four_crawl": stage_four_crawl,
     }
 
 
@@ -1316,6 +1430,87 @@ def _key_bee_demo_holds(
         _key_translation(cmds, bee_object, stage_seven_end, final_position)
 
 
+def _key_stage_four_bee_crawl(
+    cmds,
+    bees,
+    tasks,
+    cells,
+    base_transforms,
+    stage_start,
+    stage_end,
+    next_stage_start,
+):
+    """Preview one assigned worker crawling along its BFS path in Stage 4."""
+    task_by_id = {task.get("id"): task for task in tasks}
+    cell_by_id = {cell.get("id"): cell for cell in cells}
+
+    for bee in bees:
+        bee_object = bee.get("maya_object")
+        if not bee_object or not cmds.objExists(bee_object):
+            continue
+        task = next(
+            (
+                task_by_id.get(task_id)
+                for task_id in bee.get("task_queue", [])
+                if task_by_id.get(task_id)
+                and len(task_by_id[task_id].get("path") or []) > 1
+            ),
+            None,
+        )
+        if task is None:
+            continue
+
+        crawl_points = []
+        for cell_id in task.get("path", []):
+            cell = cell_by_id.get(cell_id)
+            if cell is None:
+                continue
+            x, y, z = cell["position"]
+            crawl_points.append((x, y + 0.75, z))
+        crawl_points = _sample_demo_points(crawl_points, max_points=6)
+        if len(crawl_points) < 2:
+            continue
+
+        base_position = base_transforms.get(bee.get("id"), crawl_points[0])
+        first_frame = int(stage_start) + 2
+        last_frame = int(stage_end) - 2
+        span = max(1, last_frame - first_frame)
+        keyed_frames = []
+        for index, point in enumerate(crawl_points):
+            frame = first_frame + int(
+                round(index * span / float(len(crawl_points) - 1))
+            )
+            _key_translation(cmds, bee_object, frame, point)
+            keyed_frames.append(frame)
+        _key_translation(cmds, bee_object, int(stage_start) - 1, base_position)
+        _key_translation(cmds, bee_object, stage_start, crawl_points[0])
+        _key_translation(cmds, bee_object, stage_end, crawl_points[-1])
+
+        # Return during the unplayed gap so Stage 5 begins from its clean,
+        # static trigger state rather than showing incidental worker motion.
+        _key_translation(cmds, bee_object, next_stage_start, base_position)
+        try:
+            cmds.keyTangent(
+                bee_object,
+                attribute=("translateX", "translateY", "translateZ"),
+                time=(int(stage_start), int(stage_end)),
+                inTangentType="linear",
+                outTangentType="linear",
+            )
+        except RuntimeError:
+            pass
+        return {
+            "bee_id": bee.get("id"),
+            "bee_object": bee_object,
+            "task_id": task.get("id"),
+            "path": list(task.get("path", [])),
+            "frames": keyed_frames,
+            "movement_mode": "on_hive_transport",
+        }
+
+    return None
+
+
 def _key_compact_resource_updates(
     cmds,
     cells,
@@ -1333,11 +1528,11 @@ def _key_compact_resource_updates(
     stage_three_start, stage_three_end = stage_three_range
     stage_seven_start, stage_seven_end = stage_seven_range
     max_fill_height = max(0.12, float(cell_depth) * 0.72)
-    pollen_count = 8
 
     for cell in cells:
         capacity = max(0.000001, float(cell.get("capacity", 1.0)))
         cell_id = cell["id"]
+        maya_cell_id = _maya_safe_name_component(cell_id)
         initial_type = cell.get("initial_type", cell.get("type"))
         for resource_type in ("nectar", "pollen"):
             initial_amount = float(cell.get("initial_{0}".format(resource_type), 0.0))
@@ -1349,8 +1544,31 @@ def _key_compact_resource_updates(
                 else final_amount
             )
 
+            if resource_type == "nectar":
+                voxel_levels = sorted(
+                    cmds.ls(
+                        "{0}_nectar_voxel_level_*".format(maya_cell_id),
+                        type="transform",
+                    ) or []
+                )
+                for level_index, level in enumerate(voxel_levels, start=1):
+                    for frame, amount in (
+                        (stage_three_start, initial_amount),
+                        (stage_three_end, pre_transport_amount),
+                        (stage_seven_start, pre_transport_amount),
+                        (stage_seven_end, final_amount),
+                    ):
+                        _key_discrete_level_visibility(
+                            cmds,
+                            level,
+                            frame,
+                            amount / capacity,
+                            level_index,
+                            len(voxel_levels),
+                        )
+
             if resource_type == "nectar" and initial_type == "honey":
-                fill = "{0}_nectar_level".format(cell_id)
+                fill = "{0}_nectar_level".format(maya_cell_id)
                 if not cmds.objExists(fill):
                     continue
                 _key_resource_level(
@@ -1386,12 +1604,23 @@ def _key_compact_resource_updates(
                     max_fill_height,
                 )
 
-            if resource_type == "pollen" and initial_type == "pollen":
-                for grain_index in range(pollen_count):
-                    grain = "{0}_pollen_{1:02d}".format(cell_id, grain_index)
-                    if not cmds.objExists(grain):
-                        continue
-                    threshold = float(grain_index + 1) / pollen_count
+            if resource_type == "pollen":
+                grains = sorted(
+                    cmds.ls(
+                        "{0}_pollen_*".format(maya_cell_id),
+                        type="transform",
+                    ) or []
+                )
+                legacy_grains = [
+                    "{0}_pollen_{1:02d}".format(maya_cell_id, grain_index)
+                    for grain_index in range(8)
+                    if cmds.objExists(
+                        "{0}_pollen_{1:02d}".format(maya_cell_id, grain_index)
+                    )
+                ]
+                grains = list(dict.fromkeys(grains + legacy_grains))
+                for grain_index, grain in enumerate(grains):
+                    threshold = float(grain_index + 1) / max(1, len(grains))
                     values = (
                         (stage_three_start, initial_amount),
                         (stage_three_end, pre_transport_amount),
@@ -1406,8 +1635,15 @@ def _key_compact_resource_updates(
                             value=1 if amount / capacity >= threshold else 0,
                         )
 
-        cap = "{0}_cap_lid".format(cell_id)
-        if cmds.objExists(cap):
+        caps = [
+            cap
+            for cap in (
+                "{0}_new_voxel_cap".format(maya_cell_id),
+                "{0}_cap_lid".format(maya_cell_id),
+            )
+            if cmds.objExists(cap)
+        ]
+        for cap in caps:
             initially_capped = initial_type == "capped"
             finally_capped = cell.get("type") == "capped"
             cmds.setKeyframe(
@@ -1514,77 +1750,280 @@ def _style_demo_curve(cmds, curve, color, line_width=3):
             cmds.setAttr(shape + ".lineWidth", int(line_width))
 
 
+def build_cell_resource_animation_events(
+    cells,
+    drops,
+    resource_events,
+    animation_records,
+):
+    """Build one chronological visual resource timeline for every cell.
+
+    The simulation updates cell amounts immediately, while Maya shows the same
+    changes later: a drop adds resource when it lands, a worker removes it when
+    pickup finishes, and the destination gains it when delivery finishes. This
+    pure-Python helper keeps those representations synchronized without Maya.
+    """
+    cell_by_id = {cell["id"]: cell for cell in cells}
+    warnings = []
+
+    def normalized_frame(value, fallback, task_id, label):
+        """Return a positive integer frame and record visible fallback use."""
+        try:
+            frame = int(round(float(value)))
+        except (TypeError, ValueError):
+            try:
+                frame = int(round(float(fallback)))
+            except (TypeError, ValueError):
+                frame = 1
+            warnings.append(
+                "Cloud-Hive Bloomfield: task '{0}' has no valid {1}; "
+                "using animation frame {2} for its resource visual.".format(
+                    task_id or "<unknown>",
+                    label,
+                    max(1, frame),
+                )
+            )
+        return max(1, frame)
+
+    delivery_by_task = {}
+    pickup_by_task = {}
+    for record in animation_records:
+        task_id = record.get("task_id")
+        if not task_id:
+            continue
+        keyed_frames = record.get("frames") or []
+        last_keyed_frame = keyed_frames[-1] if keyed_frames else 1
+        delivery_by_task[task_id] = normalized_frame(
+            record.get("delivery_frame"),
+            last_keyed_frame,
+            task_id,
+            "delivery frame",
+        )
+        pickup_by_task[task_id] = normalized_frame(
+            record.get("pickup_frame"),
+            keyed_frames[0] if keyed_frames else 1,
+            task_id,
+            "pickup frame",
+        )
+    drop_by_task = {
+        "task_{0}".format(drop.get("id")): drop
+        for drop in drops
+        if drop.get("id")
+    }
+
+    raw_events = []
+    sequence = 0
+    for drop in drops:
+        amount = max(0.0, float(drop.get("landing_deposited_amount", 0.0)))
+        cell_id = drop.get("landing_cell_id")
+        resource_type = drop.get("resource_type")
+        if amount <= 0.000001 or cell_id not in cell_by_id:
+            continue
+        if resource_type not in ("nectar", "pollen"):
+            continue
+        task_id = "task_{0}".format(drop.get("id"))
+        frame = normalized_frame(
+            drop.get("animation_end_frame"),
+            1,
+            task_id,
+            "landing frame",
+        )
+        raw_events.append({
+            "event_kind": "landing",
+            "task_id": task_id,
+            "cell_id": cell_id,
+            "resource_type": resource_type,
+            "amount": amount,
+            "delta": amount,
+            "frame": frame,
+            "event_order": 0,
+            "sequence": sequence,
+            "became_capped": False,
+        })
+        sequence += 1
+
+    for transfer in resource_events:
+        task_id = transfer.get("task_id")
+        resource_type = transfer.get("resource_type")
+        amount = max(0.0, float(transfer.get("amount", 0.0)))
+        if amount <= 0.000001 or resource_type not in ("nectar", "pollen"):
+            continue
+
+        linked_drop = drop_by_task.get(task_id, {})
+        landing_frame = normalized_frame(
+            linked_drop.get("animation_end_frame"),
+            1,
+            task_id,
+            "landing frame",
+        )
+        pickup_frame = max(
+            landing_frame,
+            normalized_frame(
+                pickup_by_task.get(task_id),
+                landing_frame + 5,
+                task_id,
+                "pickup frame",
+            ),
+        )
+        delivery_frame = max(
+            pickup_frame,
+            normalized_frame(
+                delivery_by_task.get(task_id),
+                pickup_frame + 8,
+                task_id,
+                "delivery frame",
+            ),
+        )
+
+        source_cell_id = transfer.get("source_cell")
+        if source_cell_id in cell_by_id:
+            raw_events.append({
+                "event_kind": "pickup",
+                "task_id": task_id,
+                "cell_id": source_cell_id,
+                "resource_type": resource_type,
+                "amount": amount,
+                "delta": -amount,
+                "frame": pickup_frame,
+                "event_order": 1,
+                "sequence": sequence,
+                "became_capped": False,
+            })
+            sequence += 1
+
+        target_cell_id = transfer.get("target_cell")
+        if target_cell_id in cell_by_id:
+            raw_events.append({
+                "event_kind": "delivery",
+                "task_id": task_id,
+                "cell_id": target_cell_id,
+                "resource_type": resource_type,
+                "amount": amount,
+                "delta": amount,
+                "frame": delivery_frame,
+                "event_order": 2,
+                "sequence": sequence,
+                "became_capped": bool(transfer.get("became_capped")),
+            })
+            sequence += 1
+
+    raw_by_cell = {}
+    for event in raw_events:
+        raw_by_cell.setdefault(event["cell_id"], []).append(event)
+
+    events_by_cell = {}
+    all_events = []
+    for cell_id, cell_events in raw_by_cell.items():
+        cell = cell_by_id[cell_id]
+        running_amounts = {
+            "nectar": float(cell.get("initial_nectar", 0.0)),
+            "pollen": float(cell.get("initial_pollen", 0.0)),
+        }
+        ordered_events = sorted(
+            cell_events,
+            key=lambda item: (
+                int(item["frame"]),
+                int(item["event_order"]),
+                int(item["sequence"]),
+            ),
+        )
+        processed = []
+        for event in ordered_events:
+            event = dict(event)
+            resource_type = event["resource_type"]
+            before_amount = running_amounts[resource_type]
+            after_amount = max(0.0, before_amount + float(event["delta"]))
+            event["before_amount"] = before_amount
+            event["after_amount"] = after_amount
+            # Retain this old key for the existing Maya keying code below.
+            event["delivery_frame"] = int(event["frame"])
+            running_amounts[resource_type] = after_amount
+            processed.append(event)
+            all_events.append(event)
+        events_by_cell[cell_id] = processed
+
+    return {
+        "events_by_cell": events_by_cell,
+        "all_events": all_events,
+        "warnings": warnings,
+        "addition_events": [
+            event for event in all_events if float(event.get("delta", 0.0)) > 0.0
+        ],
+    }
+
+
 def create_cell_resource_visuals(
     cells,
+    drops,
     resource_events,
     animation_records,
     cell_size,
     cell_depth,
+    voxel_density=14,
 ):
-    """Visualize resource levels, delivery flashes, and capped transitions."""
+    """Animate landing, pickup, and delivery changes inside honeycomb cells."""
     import maya.cmds as cmds
 
     group_name = "CloudHive_CellResources_GRP"
+    if cmds.objExists(group_name):
+        cmds.delete(group_name)
     cmds.group(empty=True, name=group_name)
-    honey_material = _create_maya_material(
-        cmds, "chm_cell_nectar_fill_MAT", (1.0, 0.62, 0.02)
-    )
-    pollen_material = _create_maya_material(
-        cmds, "chm_cell_pollen_grain_MAT", (1.0, 0.32, 0.04)
-    )
-    cap_material = _create_maya_material(
-        cmds, "chm_cell_new_cap_MAT", (0.96, 0.84, 0.55)
-    )
-    flash_material = _create_maya_material(
-        cmds, "chm_cell_delivery_flash_MAT", (1.0, 0.95, 0.32)
+    mesh_group = cmds.group(empty=True, name="CloudHive_CellResourceMeshes_GRP")
+    instance_group = cmds.group(empty=True, name="CloudHive_CellResourceInstances_GRP")
+    prototype_group = cmds.group(empty=True, name="CloudHive_CellResourcePrototypes_GRP")
+    cmds.parent(mesh_group, instance_group, prototype_group, group_name)
+    cmds.setAttr(prototype_group + ".visibility", 0)
+
+    dimensions = get_voxel_dimensions(cell_size, cell_depth, voxel_density)
+    pitch = dimensions["pitch"]
+    base_layers = dimensions["base_layers"]
+    wall_layers = dimensions["wall_layers"]
+    honey_material = create_voxel_material(cmds, "honey")
+    cap_material = create_voxel_material(cmds, "cap")
+    glint_material = create_voxel_material(cmds, "honey_glint")
+    pollen_materials = {
+        material_key: create_voxel_material(cmds, material_key)
+        for material_key in ("pollen_orange", "pollen_gold", "pollen_yellow")
+    }
+    pollen_prototypes = {
+        material_key: ensure_voxel_cube_prototype(
+            cmds,
+            "CloudHive_dynamic_{0}_PROTOTYPE".format(material_key),
+            pitch,
+            material,
+            prototype_group,
+        )
+        for material_key, material in pollen_materials.items()
+    }
+    glint_prototype = ensure_voxel_cube_prototype(
+        cmds,
+        "CloudHive_dynamic_glint_PROTOTYPE",
+        pitch,
+        glint_material,
+        prototype_group,
     )
 
-    delivery_by_task = {}
-    for record in animation_records:
-        task_id = record["task_id"]
-        delivery_frame = record.get("delivery_frame")
-        try:
-            delivery_frame = int(round(float(delivery_frame)))
-        except (TypeError, ValueError):
-            keyed_frames = record.get("frames") or []
-            fallback_frame = keyed_frames[-1] if keyed_frames else 1
-            try:
-                delivery_frame = int(round(float(fallback_frame)))
-            except (TypeError, ValueError):
-                delivery_frame = 1
-            cmds.warning(
-                "Cloud-Hive Bloomfield: task '{0}' has no valid delivery frame; "
-                "using animation frame {1} for its resource visual.".format(
-                    task_id,
-                    max(1, delivery_frame),
-                )
-            )
-        delivery_by_task[task_id] = max(1, delivery_frame)
-
-    events_by_cell = {}
-    for event in resource_events:
-        event = dict(event)
-        task_id = event.get("task_id", "<unknown>")
-        if task_id not in delivery_by_task:
-            delivery_frame = 1
-            cmds.warning(
-                "Cloud-Hive Bloomfield: task '{0}' has no animation record; "
-                "using frame 1 for its resource visual.".format(task_id)
-            )
-            delivery_by_task[task_id] = delivery_frame
-        event["delivery_frame"] = delivery_by_task[task_id]
-        events_by_cell.setdefault(event["target_cell"], []).append(event)
+    event_timeline = build_cell_resource_animation_events(
+        cells,
+        drops,
+        resource_events,
+        animation_records,
+    )
+    events_by_cell = event_timeline["events_by_cell"]
+    for warning in event_timeline.get("warnings", []):
+        cmds.warning(warning)
 
     created = []
-    max_fill_height = max(0.12, float(cell_depth) * 0.72)
-    pollen_count = 8
+    max_honey_layers = max(2, min(4, wall_layers - 3))
     pollen_offsets = [
-        (-0.28, -0.18), (0.0, -0.24), (0.27, -0.13), (-0.19, 0.07),
-        (0.12, 0.02), (0.29, 0.19), (-0.08, 0.25), (-0.31, 0.22),
+        (-0.34, -0.24), (-0.12, -0.31), (0.12, -0.28), (0.34, -0.18),
+        (-0.39, 0.02), (-0.14, -0.02), (0.11, 0.03), (0.37, 0.08),
+        (-0.28, 0.25), (-0.02, 0.29), (0.24, 0.26), (0.02, 0.10),
     ]
 
     for cell in cells:
         cell_id = cell["id"]
+        maya_cell_id = _maya_safe_name_component(cell_id)
         initial_type = cell.get("initial_type", cell.get("type"))
         capacity = max(0.000001, float(cell.get("capacity", 1.0)))
         x, _y, z = cell["position"]
@@ -1592,165 +2031,225 @@ def create_cell_resource_visuals(
             events_by_cell.get(cell_id, []),
             key=lambda item: item.get("delivery_frame", 1),
         )
+        animated_resource_types = {
+            event["resource_type"] for event in cell_events
+        }
+        show_nectar = (
+            initial_type == "honey"
+            or float(cell.get("initial_nectar", 0.0)) > 0.000001
+            or "nectar" in animated_resource_types
+        )
+        show_pollen = (
+            initial_type == "pollen"
+            or float(cell.get("initial_pollen", 0.0)) > 0.000001
+            or "pollen" in animated_resource_types
+        )
 
-        if initial_type == "honey":
-            fill, _shape = cmds.polyCylinder(
-                radius=float(cell_size) * 0.56,
-                height=max_fill_height,
-                subdivisionsX=6,
-                name="{0}_nectar_level".format(cell_id),
-            )
-            cmds.parent(fill, group_name)
-            _assign_maya_material(cmds, fill, honey_material)
-            cmds.setAttr(fill + ".translateX", x)
-            cmds.setAttr(fill + ".translateZ", z)
+        if show_nectar:
             initial_amount = float(cell.get("initial_nectar", 0.0))
-            _key_resource_level(
-                cmds, fill, 1, initial_amount / capacity, cell_depth, max_fill_height
-            )
-            for event in cell_events:
-                if event["resource_type"] != "nectar":
-                    continue
-                frame = int(event["delivery_frame"])
-                _key_resource_level(
-                    cmds,
-                    fill,
-                    max(1, frame - 1),
-                    event["before_amount"] / capacity,
-                    cell_depth,
-                    max_fill_height,
-                )
-                _key_resource_level(
-                    cmds,
-                    fill,
-                    frame,
-                    event["after_amount"] / capacity,
-                    cell_depth,
-                    max_fill_height,
-                )
-            created.append(fill)
-
-        if initial_type == "pollen":
-            initial_amount = float(cell.get("initial_pollen", 0.0))
-            for grain_index, (offset_x, offset_z) in enumerate(pollen_offsets):
-                grain, _shape = cmds.polyCube(
-                    width=float(cell_size) * 0.12,
-                    height=max_fill_height * 0.35,
-                    depth=float(cell_size) * 0.12,
-                    name="{0}_pollen_{1:02d}".format(cell_id, grain_index),
-                )
-                cmds.xform(
-                    grain,
-                    translation=(
-                        x + offset_x * float(cell_size),
-                        float(cell_depth) + max_fill_height * 0.18,
-                        z + offset_z * float(cell_size),
+            for level_index in range(max_honey_layers):
+                keys = set()
+                for stack_index in range(level_index + 1):
+                    keys.update(hex_voxel_layer_keys(
+                        x,
+                        z,
+                        float(cell_size) * 0.58,
+                        pitch,
+                        base_layers + 1 + stack_index,
+                        inset=pitch * 0.35,
+                    ))
+                fill = create_merged_voxel_mesh(
+                    keys,
+                    pitch,
+                    "{0}_nectar_voxel_level_{1:02d}".format(
+                        maya_cell_id,
+                        level_index,
                     ),
-                    worldSpace=True,
+                    honey_material,
+                    parent=mesh_group,
                 )
-                cmds.parent(grain, group_name)
-                _assign_maya_material(cmds, grain, pollen_material)
-                threshold = float(grain_index + 1) / pollen_count
-                initial_visible = 1 if initial_amount / capacity >= threshold else 0
-                cmds.setKeyframe(
-                    grain, attribute="visibility", time=1, value=initial_visible
+                if not fill:
+                    continue
+                _key_discrete_level_visibility(
+                    cmds,
+                    fill,
+                    1,
+                    initial_amount / capacity,
+                    level_index + 1,
+                    max_honey_layers,
                 )
                 for event in cell_events:
-                    if event["resource_type"] != "pollen":
+                    if event["resource_type"] != "nectar":
                         continue
                     frame = int(event["delivery_frame"])
-                    before_visible = 1 if event["before_amount"] / capacity >= threshold else 0
-                    after_visible = 1 if event["after_amount"] / capacity >= threshold else 0
-                    cmds.setKeyframe(
-                        grain,
-                        attribute="visibility",
-                        time=max(1, frame - 1),
-                        value=before_visible,
+                    _key_discrete_level_visibility(
+                        cmds,
+                        fill,
+                        max(1, frame - 1),
+                        event["before_amount"] / capacity,
+                        level_index + 1,
+                        max_honey_layers,
                     )
-                    cmds.setKeyframe(
-                        grain, attribute="visibility", time=frame, value=after_visible
+                    _key_discrete_level_visibility(
+                        cmds,
+                        fill,
+                        frame,
+                        event["after_amount"] / capacity,
+                        level_index + 1,
+                        max_honey_layers,
                     )
-                created.append(grain)
+                created.append(fill)
 
-        if initial_type == "capped" or cell.get("type") == "capped":
-            cap, _shape = cmds.polyCylinder(
-                radius=float(cell_size) * 0.72,
-                height=max(0.06, float(cell_depth) * 0.18),
-                subdivisionsX=6,
-                name="{0}_cap_lid".format(cell_id),
+        if show_pollen:
+            initial_amount = float(cell.get("initial_pollen", 0.0))
+            records_by_material = {material_key: [] for material_key in pollen_materials}
+            for grain_index, (offset_x, offset_z) in enumerate(pollen_offsets):
+                material_key = tuple(pollen_materials)[grain_index % 3]
+                records_by_material[material_key].append({
+                    "position": (
+                        round((x + offset_x * float(cell_size)) / pitch) * pitch,
+                        (base_layers + 1.1 + (grain_index // 8) * 0.72) * pitch,
+                        round((z + offset_z * float(cell_size)) / pitch) * pitch,
+                    ),
+                    "scale": (0.82, 0.72 + (grain_index % 3) * 0.12, 0.82),
+                    "threshold": float(grain_index + 1) / len(pollen_offsets),
+                })
+
+            for material_key, records in records_by_material.items():
+                grains = create_voxel_cube_instances(
+                    cmds,
+                    pollen_prototypes[material_key],
+                    records,
+                    "{0}_{1}".format(maya_cell_id, material_key),
+                    instance_group,
+                )
+                for grain, record in zip(grains, records):
+                    threshold = record["threshold"]
+                    _key_threshold_visibility(
+                        cmds,
+                        grain,
+                        1,
+                        initial_amount / capacity,
+                        threshold,
+                    )
+                    for event in cell_events:
+                        if event["resource_type"] != "pollen":
+                            continue
+                        frame = int(event["delivery_frame"])
+                        _key_threshold_visibility(
+                            cmds,
+                            grain,
+                            max(1, frame - 1),
+                            event["before_amount"] / capacity,
+                            threshold,
+                        )
+                        _key_threshold_visibility(
+                            cmds,
+                            grain,
+                            frame,
+                            event["after_amount"] / capacity,
+                            threshold,
+                        )
+                    created.append(grain)
+
+        if initial_type != "capped" and cell.get("type") == "capped":
+            cap_keys = hex_voxel_layer_keys(
+                x,
+                z,
+                float(cell_size) * 0.76,
+                pitch,
+                base_layers + wall_layers - 2,
+                inset=pitch * 0.25,
             )
-            cmds.xform(
-                cap,
-                translation=(x, float(cell_depth) + 0.08, z),
-                worldSpace=True,
+            cap = create_merged_voxel_mesh(
+                cap_keys,
+                pitch,
+                "{0}_new_voxel_cap".format(maya_cell_id),
+                cap_material,
+                parent=mesh_group,
             )
-            cmds.parent(cap, group_name)
-            _assign_maya_material(cmds, cap, cap_material)
-            cap_frame = 1
-            if initial_type != "capped":
+            if cap:
                 cap_event = next(
-                    (event for event in cell_events if event.get("became_capped")),
-                    None,
+                    (event for event in cell_events if event.get("became_capped")), None
                 )
                 cap_frame = int(cap_event["delivery_frame"]) if cap_event else 1
                 cmds.setKeyframe(
                     cap, attribute="visibility", time=max(1, cap_frame - 1), value=0
                 )
-            cmds.setKeyframe(cap, attribute="visibility", time=cap_frame, value=1)
-            created.append(cap)
+                cmds.setKeyframe(cap, attribute="visibility", time=cap_frame, value=1)
+                created.append(cap)
 
-    for event_index, event in enumerate(resource_events):
-        cell = next(
-            (item for item in cells if item["id"] == event["target_cell"]),
-            None,
-        )
-        frame = delivery_by_task.get(event["task_id"])
+    cell_by_id = {cell["id"]: cell for cell in cells}
+    for event_index, event in enumerate(event_timeline["addition_events"]):
+        cell = cell_by_id.get(event["cell_id"])
+        frame = event.get("frame")
         if cell is None or frame is None:
             continue
         x, _y, z = cell["position"]
-        flash, _shape = cmds.polyCylinder(
-            radius=float(cell_size) * 0.86,
-            height=0.045,
-            subdivisionsX=6,
-            name="CloudHive_delivery_flash_{0:03d}".format(event_index),
+        flash_offsets = (
+            (-0.46, 0.0),
+            (0.46, 0.0),
+            (0.0, -0.40),
+            (0.0, 0.40),
         )
-        cmds.xform(
-            flash,
-            translation=(x, float(cell_depth) + 0.16, z),
-            worldSpace=True,
+        flash_records = [
+            {
+                "position": (
+                    round((x + offset_x * cell_size) / pitch) * pitch,
+                    (base_layers + wall_layers + 0.45) * pitch,
+                    round((z + offset_z * cell_size) / pitch) * pitch,
+                ),
+                "scale": (0.86, 0.28, 0.86),
+            }
+            for offset_x, offset_z in flash_offsets
+        ]
+        flashes = create_voxel_cube_instances(
+            cmds,
+            glint_prototype,
+            flash_records,
+            "CloudHive_delivery_glint_{0:03d}".format(event_index),
+            instance_group,
         )
-        cmds.parent(flash, group_name)
-        _assign_maya_material(cmds, flash, flash_material)
-        cmds.setKeyframe(
-            flash, attribute="visibility", time=max(1, int(frame) - 1), value=0
-        )
-        cmds.setKeyframe(flash, attribute="visibility", time=int(frame), value=1)
-        cmds.setKeyframe(
-            flash, attribute="visibility", time=int(frame) + 8, value=0
-        )
-        created.append(flash)
+        for flash in flashes:
+            cmds.setKeyframe(
+                flash, attribute="visibility", time=max(1, int(frame) - 1), value=0
+            )
+            cmds.setKeyframe(flash, attribute="visibility", time=int(frame), value=1)
+            cmds.setKeyframe(flash, attribute="scaleX", time=int(frame), value=0.35)
+            cmds.setKeyframe(flash, attribute="scaleZ", time=int(frame), value=0.35)
+            cmds.setKeyframe(flash, attribute="scaleX", time=int(frame) + 4, value=1.30)
+            cmds.setKeyframe(flash, attribute="scaleZ", time=int(frame) + 4, value=1.30)
+            cmds.setKeyframe(
+                flash, attribute="visibility", time=int(frame) + 8, value=0
+            )
+            created.append(flash)
 
     return created
 
 
-def _key_resource_level(cmds, node, frame, ratio, cell_depth, max_height):
-    """Key a hexagonal resource fill to a normalized cell capacity."""
-    safe_ratio = max(0.01, min(1.0, float(ratio)))
-    cmds.setKeyframe(node, attribute="scaleY", time=frame, value=safe_ratio)
-    cmds.setKeyframe(
-        node,
-        attribute="translateY",
-        time=frame,
-        value=float(cell_depth) + max_height * safe_ratio * 0.5 + 0.025,
-    )
+def _key_threshold_visibility(cmds, node, frame, ratio, threshold):
+    """Reveal a whole voxel or voxel layer at a discrete resource threshold."""
+    visible = 1 if max(0.0, min(1.0, float(ratio))) >= float(threshold) else 0
+    cmds.setKeyframe(node, attribute="visibility", time=int(frame), value=visible)
+
+
+def _key_discrete_level_visibility(cmds, node, frame, ratio, level, level_count):
+    """Show exactly one premerged honey stack for a quantized fill level."""
+    safe_ratio = max(0.0, min(1.0, float(ratio)))
+    active_level = int(math.ceil(safe_ratio * int(level_count) - 0.000001))
+    visible = 1 if active_level == int(level) else 0
+    cmds.setKeyframe(node, attribute="visibility", time=int(frame), value=visible)
 
 
 def create_blocked_task_visuals(tasks, cells, animation_end=320):
-    """Place pulsing red markers above cells with unreachable cleanup tasks."""
+    """Create hidden debug markers for cells with unreachable cleanup tasks."""
     import maya.cmds as cmds
 
     group_name = "CloudHive_BlockedTasks_GRP"
     cmds.group(empty=True, name=group_name)
+    # Keep the diagnostic data available in the Outliner without allowing the
+    # red debug columns to affect the warm honeycomb presentation by default.
+    cmds.setAttr(group_name + ".visibility", 0)
     material = _create_maya_material(
         cmds, "chm_blocked_task_red_MAT", (1.0, 0.08, 0.04)
     )
@@ -1835,6 +2334,7 @@ def clear_scene(preserve_camera=False):
         "CloudHive_CollectionVisuals_GRP",
         "CloudHive_DepositUpdate_GRP",
         CAMERA_LIGHT_GROUP,
+        "CloudHive_RenderBackground_GRP",
         "CloudHive_Labels_GRP",
         "CloudHiveMeadow_GRP",
     ]
@@ -1850,13 +2350,13 @@ def clear_scene(preserve_camera=False):
 
 
 def setup_camera_and_lighting(scene_radius=9.0):
-    """Create or reuse a stable Maya overview camera and light setup.
+    """Create or reuse a stable overview camera with expanded render lighting.
 
     Parameters:
         scene_radius (float): Approximate radius used to position camera/lights.
 
     Returns:
-        dict: Names of created camera, directional light, and ambient light nodes.
+        dict: Names of the created camera and light nodes.
     """
     import maya.cmds as cmds
 
@@ -1877,49 +2377,159 @@ def setup_camera_and_lighting(scene_radius=9.0):
     )[0]
     cmds.setAttr(camera_shape + ".focalLength", 35)
 
-    sun_light, sun_shape = _find_camera_rig_node(cmds, "directionalLight")
-    if sun_light is None:
-        sun_shape = cmds.directionalLight(intensity=1.28)
-        sun_light = cmds.listRelatives(sun_shape, parent=True, fullPath=True)[0]
-        sun_light = cmds.rename(sun_light, "CloudHive_Sun_LGT")
-    sun_light = _parent_to_camera_rig(cmds, sun_light, group_name)
-    sun_shape = cmds.listRelatives(
-        sun_light,
-        shapes=True,
-        type="directionalLight",
-        fullPath=True,
-    )[0]
-    cmds.xform(sun_light, rotation=(-45.0, -30.0, 0.0), worldSpace=True)
-    cmds.setAttr(sun_shape + ".intensity", 1.28)
-    cmds.setAttr(sun_shape + ".color", 1.0, 0.78, 0.48, type="double3")
+    # The camera survives cycle rebuilds, but lights are recreated inside this
+    # generated rig so teammate lighting upgrades never accumulate duplicates.
+    _clear_generated_camera_lights(cmds, group_name)
+    key_light, key_shape = _create_native_render_light(
+        cmds,
+        group_name,
+        "directionalLight",
+        "CloudHive_Key_LGT",
+        2.25,
+        (1.0, 0.82, 0.62),
+        rotation=(-48.0, -32.0, 0.0),
+    )
+    fill_light, fill_shape = _create_native_render_light(
+        cmds,
+        group_name,
+        "directionalLight",
+        "CloudHive_Fill_LGT",
+        1.15,
+        (0.76, 0.82, 1.0),
+        rotation=(-28.0, 142.0, 0.0),
+    )
+    top_light, top_shape = _create_native_render_light(
+        cmds,
+        group_name,
+        "directionalLight",
+        "CloudHive_TopFill_LGT",
+        0.65,
+        (1.0, 0.92, 0.78),
+        rotation=(-82.0, 18.0, 0.0),
+    )
+    ambient_light, ambient_shape = _create_native_render_light(
+        cmds,
+        group_name,
+        "ambientLight",
+        "CloudHive_Ambient_LGT",
+        0.38,
+        (0.78, 0.80, 1.0),
+    )
 
-    ambient_light, ambient_shape = _find_camera_rig_node(cmds, "ambientLight")
-    if ambient_light is None:
-        ambient_shape = cmds.ambientLight(intensity=0.42)
-        ambient_light = cmds.listRelatives(
-            ambient_shape,
-            parent=True,
-            fullPath=True,
-        )[0]
-        ambient_light = cmds.rename(ambient_light, "CloudHive_Ambient_LGT")
-    ambient_light = _parent_to_camera_rig(cmds, ambient_light, group_name)
-    ambient_shape = cmds.listRelatives(
-        ambient_light,
-        shapes=True,
-        type="ambientLight",
-        fullPath=True,
-    )[0]
-    cmds.setAttr(ambient_shape + ".intensity", 0.42)
-    cmds.setAttr(ambient_shape + ".color", 0.72, 0.74, 1.0, type="double3")
+    for light_shape in (key_shape, fill_shape, top_shape, ambient_shape):
+        if cmds.attributeQuery("useRayTraceShadows", node=light_shape, exists=True):
+            cmds.setAttr(light_shape + ".useRayTraceShadows", 0)
+        if cmds.attributeQuery("aiCastShadows", node=light_shape, exists=True):
+            cmds.setAttr(light_shape + ".aiCastShadows", 0)
+    for light_shape, exposure in (
+        (key_shape, 1.50),
+        (fill_shape, 1.25),
+        (top_shape, 1.00),
+    ):
+        if cmds.attributeQuery("aiExposure", node=light_shape, exists=True):
+            cmds.setAttr(light_shape + ".aiExposure", exposure)
+    if cmds.attributeQuery("aiAngle", node=key_shape, exists=True):
+        cmds.setAttr(key_shape + ".aiAngle", 4.0)
+
+    sky_fill_light = None
+    sky_fill_shape = None
+    try:
+        sky_node = cmds.shadingNode(
+            "aiSkyDomeLight",
+            asLight=True,
+            name="CloudHive_SkyFill_LGT",
+        )
+        sky_parent = cmds.listRelatives(sky_node, parent=True, fullPath=True) or []
+        if sky_parent:
+            sky_fill_shape = sky_node
+            sky_fill_light = _parent_to_camera_rig(cmds, sky_parent[0], group_name)
+        else:
+            sky_fill_light = _parent_to_camera_rig(cmds, sky_node, group_name)
+            sky_shapes = cmds.listRelatives(
+                sky_fill_light, shapes=True, fullPath=True
+            ) or []
+            sky_fill_shape = sky_shapes[0] if sky_shapes else None
+        if sky_fill_shape:
+            if cmds.attributeQuery("color", node=sky_fill_shape, exists=True):
+                cmds.setAttr(
+                    sky_fill_shape + ".color", 1.0, 0.78, 0.64, type="double3"
+                )
+            if cmds.attributeQuery("intensity", node=sky_fill_shape, exists=True):
+                cmds.setAttr(sky_fill_shape + ".intensity", 0.45)
+            if cmds.attributeQuery("exposure", node=sky_fill_shape, exists=True):
+                cmds.setAttr(sky_fill_shape + ".exposure", 1.0)
+            if cmds.attributeQuery("camera", node=sky_fill_shape, exists=True):
+                cmds.setAttr(sky_fill_shape + ".camera", 0)
+            if cmds.attributeQuery("aiCastShadows", node=sky_fill_shape, exists=True):
+                cmds.setAttr(sky_fill_shape + ".aiCastShadows", 0)
+    except (RuntimeError, ValueError):
+        sky_fill_light = None
+        sky_fill_shape = None
 
     return {
         "camera": camera_transform.rsplit("|", 1)[-1],
         "camera_shape": camera_shape.rsplit("|", 1)[-1],
-        "sun_light": sun_light.rsplit("|", 1)[-1],
-        "sun_shape": sun_shape.rsplit("|", 1)[-1],
+        "key_light": key_light.rsplit("|", 1)[-1],
+        "key_shape": key_shape.rsplit("|", 1)[-1],
+        "fill_light": fill_light.rsplit("|", 1)[-1],
+        "fill_shape": fill_shape.rsplit("|", 1)[-1],
+        "top_light": top_light.rsplit("|", 1)[-1],
+        "top_shape": top_shape.rsplit("|", 1)[-1],
+        "sky_fill_light": (
+            sky_fill_light.rsplit("|", 1)[-1] if sky_fill_light else None
+        ),
+        "sky_fill_shape": (
+            sky_fill_shape.rsplit("|", 1)[-1] if sky_fill_shape else None
+        ),
         "ambient_light": ambient_light.rsplit("|", 1)[-1],
         "ambient_shape": ambient_shape.rsplit("|", 1)[-1],
     }
+
+
+def _clear_generated_camera_lights(cmds, group_name):
+    """Delete only generated light transforms while preserving the camera."""
+    transforms = set()
+    for light_type in ("directionalLight", "ambientLight", "aiSkyDomeLight"):
+        try:
+            shapes = cmds.listRelatives(
+                group_name,
+                allDescendents=True,
+                fullPath=True,
+                type=light_type,
+            ) or []
+        except RuntimeError:
+            shapes = []
+        for shape in shapes:
+            transforms.update(
+                cmds.listRelatives(shape, parent=True, fullPath=True) or [shape]
+            )
+    if transforms:
+        cmds.delete(sorted(transforms, key=len, reverse=True))
+
+
+def _create_native_render_light(
+    cmds,
+    group_name,
+    light_type,
+    transform_name,
+    intensity,
+    color,
+    rotation=None,
+):
+    """Create one named native Maya light inside the generated camera rig."""
+    if light_type == "ambientLight":
+        shape = cmds.ambientLight(intensity=float(intensity))
+    else:
+        shape = cmds.directionalLight(intensity=float(intensity))
+    transform = cmds.listRelatives(shape, parent=True, fullPath=True)[0]
+    transform = cmds.rename(transform, transform_name)
+    transform = _parent_to_camera_rig(cmds, transform, group_name)
+    shape = (cmds.listRelatives(transform, shapes=True, fullPath=True) or [shape])[0]
+    cmds.setAttr(shape + ".intensity", float(intensity))
+    cmds.setAttr(shape + ".color", *color, type="double3")
+    if rotation is not None:
+        cmds.xform(transform, rotation=rotation, worldSpace=True)
+    return transform, shape
 
 
 def _find_camera_rig_node(cmds, shape_type):
@@ -2085,6 +2695,329 @@ def frame_scene_overview(camera_transform=OVERVIEW_CAMERA, fallback_radius=9.0, 
     }
 
 
+def create_render_background(
+    camera_transform,
+    camera_shape,
+    scene_radius=9.0,
+):
+    """Create a camera-locked procedural sunset backdrop and distant clouds.
+
+    The background uses a Maya ramp feeding a surface shader, so it requires no
+    image texture and renders consistently without receiving scene lighting.
+    """
+    import maya.cmds as cmds
+
+    group_name = "CloudHive_RenderBackground_GRP"
+    if cmds.objExists(group_name):
+        cmds.delete(group_name)
+    background_group = cmds.group(empty=True, name=group_name)
+    cmds.parent(background_group, camera_transform, relative=True)
+    # Remove shader nodes left by the earlier visible sun-disk version.
+    for legacy_sun_node in ("chm_sunset_sun_SG", "chm_sunset_sun_SURF"):
+        if cmds.objExists(legacy_sun_node):
+            cmds.delete(legacy_sun_node)
+
+    # Respect the user's existing Maya render size. The background adapts to
+    # that aspect ratio but never changes Render Settings or Render View scale.
+    if cmds.objExists("defaultResolution"):
+        safe_width = max(1, int(cmds.getAttr("defaultResolution.width")))
+        safe_height = max(1, int(cmds.getAttr("defaultResolution.height")))
+        # Undo the exact 1500x1000 size forced by the previous background
+        # version. This one-time migration keeps the same 3:2 framing while
+        # making Render View display the image at a comfortable size again.
+        if (safe_width, safe_height) == (1500, 1000):
+            safe_width, safe_height = 960, 640
+            cmds.setAttr("defaultResolution.width", safe_width)
+            cmds.setAttr("defaultResolution.height", safe_height)
+            if cmds.attributeQuery(
+                "deviceAspectRatio",
+                node="defaultResolution",
+                exists=True,
+            ):
+                cmds.setAttr("defaultResolution.deviceAspectRatio", 1.5)
+    else:
+        safe_width = 960
+        safe_height = 540
+    aspect_ratio = float(safe_width) / float(safe_height)
+
+    for scene_camera_shape in cmds.ls(type="camera") or []:
+        if cmds.attributeQuery("renderable", node=scene_camera_shape, exists=True):
+            cmds.setAttr(
+                scene_camera_shape + ".renderable",
+                1 if scene_camera_shape == camera_shape else 0,
+            )
+
+    focal_length = max(1.0, float(cmds.getAttr(camera_shape + ".focalLength")))
+    film_aperture_mm = max(
+        1.0,
+        float(cmds.getAttr(camera_shape + ".horizontalFilmAperture")) * 25.4,
+    )
+    backdrop_distance = max(36.0, float(scene_radius) * 5.5)
+    if cmds.attributeQuery("farClipPlane", node=camera_shape, exists=True):
+        current_far_clip = float(cmds.getAttr(camera_shape + ".farClipPlane"))
+        cmds.setAttr(
+            camera_shape + ".farClipPlane",
+            max(current_far_clip, backdrop_distance + 20.0),
+        )
+    half_view_width = backdrop_distance * film_aperture_mm / (2.0 * focal_length)
+    backdrop_width = half_view_width * 2.0 * 1.18
+    backdrop_height = backdrop_width / aspect_ratio
+
+    backdrop = cmds.polyPlane(
+        width=backdrop_width,
+        height=backdrop_height,
+        subdivisionsX=1,
+        subdivisionsY=1,
+        constructionHistory=False,
+        name="CloudHive_Sunset_Backdrop_GEO",
+    )[0]
+    cmds.parent(backdrop, background_group, relative=True)
+    cmds.setAttr(backdrop + ".translate", 0.0, 0.0, -backdrop_distance, type="double3")
+    # A Maya polyPlane is born on XZ. Rotating -90 degrees places it on XY
+    # while retaining a bottom-to-top V coordinate for the vertical ramp.
+    cmds.setAttr(backdrop + ".rotateX", -90.0)
+
+    ramp_name = "chm_sunset_sky_gradient_RMP"
+    if cmds.objExists(ramp_name) and cmds.nodeType(ramp_name) != "ramp":
+        cmds.delete(ramp_name)
+    ramp = (
+        ramp_name
+        if cmds.objExists(ramp_name)
+        else cmds.shadingNode("ramp", asTexture=True, name=ramp_name)
+    )
+    place_name = "chm_sunset_sky_place2d"
+    if cmds.objExists(place_name) and cmds.nodeType(place_name) != "place2dTexture":
+        cmds.delete(place_name)
+    place_2d = (
+        place_name
+        if cmds.objExists(place_name)
+        else cmds.shadingNode("place2dTexture", asUtility=True, name=place_name)
+    )
+    cmds.connectAttr(place_2d + ".outUV", ramp + ".uvCoord", force=True)
+    cmds.connectAttr(
+        place_2d + ".outUvFilterSize",
+        ramp + ".uvFilterSize",
+        force=True,
+    )
+    cmds.setAttr(ramp + ".type", 0)
+    cmds.setAttr(ramp + ".interpolation", 3)
+    gradient_entries = (
+        # The primitive plane's rendered V direction runs from image top to
+        # bottom, so purple is entered first and warm gold last.
+        (0, 0.00, (0.29, 0.30, 0.58)),
+        (1, 0.34, (0.66, 0.45, 0.64)),
+        (2, 0.68, (1.00, 0.67, 0.40)),
+        (3, 1.00, (1.00, 0.55, 0.18)),
+    )
+    for entry_index, position, color in gradient_entries:
+        entry = "{0}.colorEntryList[{1}]".format(ramp, entry_index)
+        cmds.setAttr(entry + ".position", position)
+        cmds.setAttr(entry + ".color", *color, type="double3")
+
+    sky_shader_name = "chm_sunset_sky_SURF"
+    if (
+        cmds.objExists(sky_shader_name)
+        and cmds.nodeType(sky_shader_name) != "surfaceShader"
+    ):
+        cmds.delete(sky_shader_name)
+    sky_shader = (
+        sky_shader_name
+        if cmds.objExists(sky_shader_name)
+        else cmds.shadingNode("surfaceShader", asShader=True, name=sky_shader_name)
+    )
+    cmds.connectAttr(ramp + ".outColor", sky_shader + ".outColor", force=True)
+    sky_shading_group = _ensure_surface_shading_group(
+        cmds,
+        sky_shader,
+        "chm_sunset_sky_SG",
+    )
+    cmds.sets(backdrop, edit=True, forceElement=sky_shading_group)
+
+    distant_light_shader, distant_light_sg = _ensure_constant_surface_shader(
+        cmds,
+        "chm_sunset_distant_cloud_light_SURF",
+        "chm_sunset_distant_cloud_light_SG",
+        (1.0, 0.86, 0.69),
+    )
+    distant_shadow_shader, distant_shadow_sg = _ensure_constant_surface_shader(
+        cmds,
+        "chm_sunset_distant_cloud_shadow_SURF",
+        "chm_sunset_distant_cloud_shadow_SG",
+        (0.77, 0.65, 0.75),
+    )
+    distant_cloud_specs = (
+        (
+            -0.43,
+            0.24,
+            0.024,
+            (
+                (-2, 0, "shadow"), (-1, 0, "shadow"), (0, 0, "shadow"),
+                (1, 0, "shadow"), (2, 0, "shadow"),
+                (-1, 1, "light"), (0, 1, "light"), (1, 1, "light"),
+                (2, 1, "light"), (0, 2, "light"), (1, 2, "light"),
+            ),
+        ),
+        (
+            -0.10,
+            0.30,
+            0.019,
+            (
+                (-2, 0, "shadow"), (-1, 0, "shadow"), (0, 0, "shadow"),
+                (1, 0, "shadow"), (2, 0, "shadow"),
+                (-1, 1, "light"), (0, 1, "light"), (1, 1, "light"),
+                (0, 2, "light"),
+            ),
+        ),
+        (
+            0.29,
+            0.34,
+            0.017,
+            (
+                (-2, 0, "shadow"), (-1, 0, "shadow"), (0, 0, "shadow"),
+                (1, 0, "shadow"), (2, 0, "shadow"),
+                (-1, 1, "light"), (0, 1, "light"), (1, 1, "light"),
+                (1, 2, "light"),
+            ),
+        ),
+    )
+    distant_cloud_groups = []
+    distant_cloud_shapes = []
+    for cloud_index, (
+        anchor_x_ratio,
+        anchor_y_ratio,
+        block_ratio,
+        block_pattern,
+    ) in enumerate(distant_cloud_specs):
+        cloud_group = cmds.group(
+            empty=True,
+            name="CloudHive_DistantCloud_{0:02d}_GRP".format(cloud_index),
+        )
+        cmds.parent(cloud_group, background_group, relative=True)
+        cmds.setAttr(
+            cloud_group + ".translate",
+            backdrop_width * anchor_x_ratio,
+            backdrop_height * anchor_y_ratio,
+            0.0,
+            type="double3",
+        )
+        distant_cloud_groups.append(cloud_group)
+        block_size = backdrop_height * block_ratio
+        for block_index, (grid_x, grid_y, shade) in enumerate(block_pattern):
+            block = cmds.polyCube(
+                width=block_size * 1.02,
+                height=block_size * 1.02,
+                depth=0.04,
+                constructionHistory=False,
+                name="CloudHive_DistantCloud_{0:02d}_block_{1:02d}".format(
+                    cloud_index,
+                    block_index,
+                ),
+            )[0]
+            cmds.parent(block, cloud_group, relative=True)
+            cmds.setAttr(
+                block + ".translate",
+                grid_x * block_size,
+                grid_y * block_size,
+                -backdrop_distance + 0.26,
+                type="double3",
+            )
+            shading_group = (
+                distant_light_sg if shade == "light" else distant_shadow_sg
+            )
+            cmds.sets(block, edit=True, forceElement=shading_group)
+            block_shape = (cmds.listRelatives(block, shapes=True) or [None])[0]
+            if block_shape:
+                _set_background_render_stats(cmds, block_shape)
+                distant_cloud_shapes.append(block_shape)
+
+    backdrop_shape = (cmds.listRelatives(backdrop, shapes=True) or [None])[0]
+    if backdrop_shape:
+        _set_background_render_stats(cmds, backdrop_shape)
+
+    return {
+        "group": background_group,
+        "backdrop": backdrop,
+        "backdrop_shape": backdrop_shape,
+        "ramp": ramp,
+        "place_2d": place_2d,
+        "sky_shader": sky_shader,
+        "distant_cloud_groups": distant_cloud_groups,
+        "distant_cloud_shapes": distant_cloud_shapes,
+        "distant_cloud_light_shader": distant_light_shader,
+        "distant_cloud_shadow_shader": distant_shadow_shader,
+        "render_width": safe_width,
+        "render_height": safe_height,
+    }
+
+
+def _ensure_surface_shading_group(cmds, shader, shading_group_name):
+    """Create a shading group and connect one surface shader to it."""
+    if (
+        cmds.objExists(shading_group_name)
+        and cmds.nodeType(shading_group_name) != "shadingEngine"
+    ):
+        cmds.delete(shading_group_name)
+    shading_group = (
+        shading_group_name
+        if cmds.objExists(shading_group_name)
+        else cmds.sets(
+            renderable=True,
+            noSurfaceShader=True,
+            empty=True,
+            name=shading_group_name,
+        )
+    )
+    cmds.connectAttr(
+        shader + ".outColor",
+        shading_group + ".surfaceShader",
+        force=True,
+    )
+    return shading_group
+
+
+def _ensure_constant_surface_shader(
+    cmds,
+    shader_name,
+    shading_group_name,
+    color,
+):
+    """Create or update an unlit solid-color surface shader."""
+    if cmds.objExists(shader_name) and cmds.nodeType(shader_name) != "surfaceShader":
+        cmds.delete(shader_name)
+    shader = (
+        shader_name
+        if cmds.objExists(shader_name)
+        else cmds.shadingNode("surfaceShader", asShader=True, name=shader_name)
+    )
+    cmds.setAttr(shader + ".outColor", *color, type="double3")
+    shading_group = _ensure_surface_shading_group(
+        cmds,
+        shader,
+        shading_group_name,
+    )
+    return shader, shading_group
+
+
+def _set_background_render_stats(cmds, shape):
+    """Keep backdrop geometry camera-visible but absent from lighting rays."""
+    attributes = {
+        "primaryVisibility": 1,
+        "castsShadows": 0,
+        "receiveShadows": 0,
+        "visibleInReflections": 0,
+        "visibleInRefractions": 0,
+        "aiVisibleInDiffuseReflection": 0,
+        "aiVisibleInSpecularReflection": 0,
+        "aiVisibleInTransmission": 0,
+        "aiVisibleInVolume": 0,
+        "aiVisibleInShadow": 0,
+        "aiSelfShadows": 0,
+    }
+    for attribute, value in attributes.items():
+        if cmds.attributeQuery(attribute, node=shape, exists=True):
+            cmds.setAttr(shape + "." + attribute, value)
+
+
 def create_ground_plane(scene_radius=9.0):
     """Create a simple ground plane under the honeycomb scene.
 
@@ -2141,11 +3074,38 @@ def create_falling_resource_effects(
     if cmds.objExists(group_name):
         cmds.delete(group_name)
     cmds.group(empty=True, name=group_name)
+    prototype_group = cmds.group(
+        empty=True,
+        name="CloudHive_FallingResourcePrototypes_GRP",
+    )
+    cmds.parent(prototype_group, group_name)
+    cmds.setAttr(prototype_group + ".visibility", 0)
 
     cloud_by_id = {cloud["id"]: cloud for cloud in clouds}
-    nectar_material = _create_maya_material(cmds, "chm_pixel_nectar_MAT", (1.0, 0.62, 0.02))
-    pollen_material = _create_maya_material(cmds, "chm_pixel_pollen_MAT", (1.0, 0.42, 0.05))
-    streak_material = _create_maya_material(cmds, "chm_pixel_nectar_streak_MAT", (1.0, 0.78, 0.12))
+    nectar_material = create_voxel_material(cmds, "nectar_glow")
+    pollen_material = create_voxel_material(cmds, "pollen_orange")
+    glint_material = create_voxel_material(cmds, "honey_glint")
+    nectar_prototype = ensure_voxel_cube_prototype(
+        cmds,
+        "CloudHive_falling_nectar_PROTOTYPE",
+        0.22,
+        nectar_material,
+        prototype_group,
+    )
+    pollen_prototype = ensure_voxel_cube_prototype(
+        cmds,
+        "CloudHive_falling_pollen_PROTOTYPE",
+        0.09,
+        pollen_material,
+        prototype_group,
+    )
+    glint_prototype = ensure_voxel_cube_prototype(
+        cmds,
+        "CloudHive_falling_glint_PROTOTYPE",
+        0.07,
+        glint_material,
+        prototype_group,
+    )
 
     created = []
     frame_span = max(1, int(end_frame) - int(start_frame))
@@ -2175,53 +3135,21 @@ def create_falling_resource_effects(
         start_x = cloud_x + math.sin(index * 1.7) * jitter
         start_y = cloud_y - 0.55
         start_z = cloud_z + math.cos(index * 1.3) * jitter
-        size = 0.13 if resource_type == "nectar" else 0.09
-
-        # At the static Stage 1 frame, future scheduled drops would otherwise
-        # be invisible. Preview markers keep every new drop legible under its
-        # source cloud, then disappear as soon as the user presses Play.
-        if local_start > int(start_frame):
-            preview, _shape = cmds.polySphere(
-                radius=size * 1.15,
-                name="CloudHive_{0}_drop_preview_{1:03d}".format(
-                    resource_type,
-                    index,
+        prototype = nectar_prototype if resource_type == "nectar" else pollen_prototype
+        particle = create_voxel_cube_instances(
+            cmds,
+            prototype,
+            [{
+                "position": (start_x, start_y, start_z),
+                "scale": (
+                    1.12 if resource_type == "nectar" else 1.0,
+                    1.72 if resource_type == "nectar" else 1.0,
+                    1.12 if resource_type == "nectar" else 1.0,
                 ),
-            )
-            cmds.xform(
-                preview,
-                translation=(start_x, start_y, start_z),
-                worldSpace=True,
-            )
-            cmds.parent(preview, group_name)
-            _assign_maya_material(
-                cmds,
-                preview,
-                nectar_material if resource_type == "nectar" else pollen_material,
-            )
-            cmds.setKeyframe(
-                preview,
-                attribute="visibility",
-                time=int(start_frame),
-                value=1,
-            )
-            cmds.setKeyframe(
-                preview,
-                attribute="visibility",
-                time=int(start_frame) + 1,
-                value=0,
-            )
-            created.append(preview)
-
-        particle, _shape = cmds.polyCube(
-            width=size,
-            height=size * (1.55 if resource_type == "nectar" else 1.0),
-            depth=size,
-            name="CloudHive_{0}_falling_{1:03d}".format(resource_type, index),
-        )
-        cmds.xform(particle, translation=(start_x, start_y, start_z), worldSpace=True)
-        cmds.parent(particle, group_name)
-        _assign_maya_material(cmds, particle, nectar_material if resource_type == "nectar" else pollen_material)
+            }],
+            "CloudHive_{0}_falling_{1:03d}".format(resource_type, index),
+            group_name,
+        )[0]
 
         if local_start > int(start_frame):
             cmds.setKeyframe(particle, attribute="visibility", time=local_start - 1, value=0)
@@ -2237,25 +3165,61 @@ def create_falling_resource_effects(
         created.append(particle)
 
         if resource_type == "nectar":
-            streak = cmds.curve(
-                degree=1,
-                point=[
-                    (start_x, start_y, start_z),
-                    ((start_x + end_x) * 0.5, (start_y + end_y) * 0.5, (start_z + end_z) * 0.5),
-                    (end_x, end_y + 0.35, end_z),
-                ],
-                name="CloudHive_nectar_fall_streak_{0:03d}".format(index),
+            glint_records = []
+            for glint_index in range(3):
+                glint_records.append({
+                    "position": (
+                        start_x + (glint_index - 1) * 0.055,
+                        start_y + 0.10 + glint_index * 0.08,
+                        start_z - glint_index * 0.035,
+                    ),
+                    "scale": (
+                        0.70 - glint_index * 0.12,
+                        0.32,
+                        0.70 - glint_index * 0.12,
+                    ),
+                })
+            glints = create_voxel_cube_instances(
+                cmds,
+                glint_prototype,
+                glint_records,
+                "CloudHive_nectar_glint_{0:03d}".format(index),
+                group_name,
             )
-            shape = cmds.listRelatives(streak, shapes=True)[0]
-            cmds.setAttr(shape + ".lineWidth", 2)
-            cmds.parent(streak, group_name)
-            _assign_maya_material(cmds, streak, streak_material)
-            if local_start > int(start_frame):
-                cmds.setKeyframe(streak, attribute="visibility", time=local_start - 1, value=0)
-            cmds.setKeyframe(streak, attribute="visibility", time=local_start, value=1)
-            cmds.setKeyframe(streak, attribute="visibility", time=local_end, value=1)
-            cmds.setKeyframe(streak, attribute="visibility", time=min(int(end_frame), local_end + 2), value=0)
-            created.append(streak)
+            for glint_index, glint in enumerate(glints):
+                glint_start = min(local_end - 1, local_start + 2 + glint_index * 2)
+                glint_end = min(int(end_frame), local_end + glint_index)
+                if glint_start > int(start_frame):
+                    cmds.setKeyframe(
+                        glint,
+                        attribute="visibility",
+                        time=glint_start - 1,
+                        value=0,
+                    )
+                cmds.setKeyframe(glint, attribute="visibility", time=glint_start, value=1)
+                cmds.setKeyframe(glint, attribute="translateX", time=glint_start, value=start_x)
+                cmds.setKeyframe(
+                    glint,
+                    attribute="translateY",
+                    time=glint_start,
+                    value=start_y + 0.10 + glint_index * 0.08,
+                )
+                cmds.setKeyframe(glint, attribute="translateZ", time=glint_start, value=start_z)
+                cmds.setKeyframe(glint, attribute="translateX", time=glint_end, value=end_x)
+                cmds.setKeyframe(
+                    glint,
+                    attribute="translateY",
+                    time=glint_end,
+                    value=end_y + 0.47 + glint_index * 0.08,
+                )
+                cmds.setKeyframe(glint, attribute="translateZ", time=glint_end, value=end_z)
+                cmds.setKeyframe(
+                    glint,
+                    attribute="visibility",
+                    time=min(int(end_frame), glint_end + 2),
+                    value=0,
+                )
+                created.append(glint)
 
     cmds.playbackOptions(minTime=start_frame, maxTime=end_frame, loop="continuous")
     return created
@@ -2508,6 +3472,9 @@ def _create_maya_material(cmds, material_name, color):
         str: Maya material node name.
     """
     if cmds.objExists(material_name):
+        if cmds.attributeQuery("color", node=material_name, exists=True):
+            cmds.setAttr(material_name + ".color", *color, type="double3")
+        _apply_visual_lambert_fill(cmds, material_name, color)
         return material_name
 
     material = cmds.shadingNode("lambert", asShader=True, name=material_name)
@@ -2518,7 +3485,24 @@ def _create_maya_material(cmds, material_name, color):
         color[2],
         type="double3",
     )
+    _apply_visual_lambert_fill(cmds, material, color)
     return material
+
+
+def _apply_visual_lambert_fill(cmds, material, color):
+    """Keep bees and auxiliary stylized geometry readable in render shadows."""
+    if cmds.attributeQuery("ambientColor", node=material, exists=True):
+        cmds.setAttr(
+            material + ".ambientColor",
+            *(component * 0.16 for component in color),
+            type="double3",
+        )
+    if cmds.attributeQuery("incandescence", node=material, exists=True):
+        cmds.setAttr(
+            material + ".incandescence",
+            *(component * 0.07 for component in color),
+            type="double3",
+        )
 
 
 def _assign_maya_material(cmds, node, material):

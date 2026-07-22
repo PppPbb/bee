@@ -49,6 +49,7 @@ DEFAULT_INTEGRATION_PARAMETERS = {
     "visual": {
         "ground_radius": 9.0,
         "cell_depth": 0.35,
+        "voxel_density": 14,
         "cloud_scale": 0.85,
         "flowers_per_cloud": 7,
         "bee_scale": 1.0,
@@ -58,5 +59,6 @@ DEFAULT_INTEGRATION_PARAMETERS = {
         "bee_frame_step": 22,
         "frame_duration_multiplier": 4.0,
         "show_paths": True,
+        "render_background": True,
     },
 }

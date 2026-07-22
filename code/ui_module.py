@@ -47,6 +47,7 @@ def _ensure_controls(cmds):
     required = (
         "hive_size",
         "cell_size",
+        "voxel_density",
         "honey_ratio",
         "pollen_ratio",
         "capped_ratio",
@@ -85,6 +86,7 @@ def _read_parameters(cmds):
 
     hive["size"] = _int_value(cmds, "hive_size")
     hive["cell_size"] = _float_value(cmds, "cell_size")
+    visual["voxel_density"] = _int_value(cmds, "voxel_density")
 
     honey_ratio = _float_value(cmds, "honey_ratio")
     pollen_ratio = _float_value(cmds, "pollen_ratio")
@@ -528,10 +530,28 @@ def show_ui(initial_scene_data=None):
     global LAST_SCENE_DATA, CURRENT_PARAMETERS, SIMULATION_STEP, CURRENT_DEMO_STAGE
     global PLAYBACK_ACTIVE
     _cancel_stage_playback(cmds)
-    defaults = copy.deepcopy(load_parameters())
+    saved_parameters = (
+        initial_scene_data.get("parameters")
+        if initial_scene_data
+        else None
+    )
+    parameter_source = saved_parameters or (
+        CURRENT_PARAMETERS
+        if initial_scene_data and CURRENT_PARAMETERS is not None
+        else load_parameters()
+    )
+    defaults = copy.deepcopy(parameter_source)
     LAST_SCENE_DATA = initial_scene_data
     CURRENT_PARAMETERS = copy.deepcopy(defaults)
-    SIMULATION_STEP = 0
+    SIMULATION_STEP = int(
+        initial_scene_data.get("summary", {}).get(
+            "cycle_number",
+            defaults.get("simulation", {}).get("cycle", 0),
+        )
+        if initial_scene_data
+        else 0
+    )
+    CURRENT_PARAMETERS.setdefault("simulation", {})["cycle"] = SIMULATION_STEP
     CURRENT_DEMO_STAGE = int(
         initial_scene_data.get("demo_stage", 0) if initial_scene_data else 0
     )
@@ -571,6 +591,11 @@ def show_ui(initial_scene_data=None):
         label="Cell Size", field=True, minValue=0.5, maxValue=2.0,
         fieldMinValue=0.1, fieldMaxValue=5.0,
         value=hive_defaults["cell_size"], precision=2,
+    )
+    CONTROLS["voxel_density"] = cmds.intSliderGrp(
+        label="Pixel Density", field=True, minValue=8, maxValue=20,
+        fieldMinValue=8, fieldMaxValue=24,
+        value=visual_defaults.get("voxel_density", 14),
     )
     CONTROLS["honey_ratio"] = cmds.floatSliderGrp(
         label="Honey Ratio", field=True, minValue=0.0, maxValue=1.0,
@@ -629,7 +654,7 @@ def show_ui(initial_scene_data=None):
         value=visual_defaults.get("drop_fall_frames", 64),
     )
     CONTROLS["bee_frame_step"] = cmds.intSliderGrp(
-        label="Bee Speed (Frames)", field=True, minValue=8, maxValue=50,
+        label="Bee Speed (Lower = Faster)", field=True, minValue=8, maxValue=50,
         value=visual_defaults.get("bee_frame_step", 22),
     )
     CONTROLS["show_paths"] = cmds.checkBox(
