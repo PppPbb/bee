@@ -10,6 +10,7 @@ from bee_task_module import (
 )
 from cloud_resource_module import (
     create_cloud_geometry,
+    create_drop_particles,
     create_flower_geometry_on_clouds,
 )
 from hive_module import create_honeycomb_geometry
@@ -17,6 +18,32 @@ from main import load_parameters, run_simulation
 
 
 ROOT_GROUP = "CloudHive_Visualization_GRP"
+CAMERA_LIGHT_GROUP = "CloudHive_CameraLight_GRP"
+OVERVIEW_CAMERA = "CloudHive_Render_CAM"
+DEMO_STAGE_LABELS = {
+    0: "Base Scene",
+    1: "Natural Resource Drop",
+    2: "Drop Mapping and Cell Validation",
+    3: "Direct Storage or Task Creation",
+    4: "Bee Task Selection and BFS Path",
+    5: "Resource Check and Collection Trigger",
+    6: "Cloud Collection Ready",
+    7: "Deposit Update / Next Cycle Ready",
+}
+DEMO_VISUAL_GROUPS = {
+    "natural_drops": "CloudHive_ResourceDrops_GRP",
+    "falling_drops": "CloudHive_FallingResources_GRP",
+    "mapping": "CloudHive_DropMapping_GRP",
+    "validation": "CloudHive_ValidationHighlights_GRP",
+    "direct_storage": "CloudHive_DirectStorage_GRP",
+    "task_markers": "CloudHive_TaskMarkers_GRP",
+    "bee_selections": "CloudHive_BeeSelections_GRP",
+    "bfs_paths": "CloudHive_BeeTaskPaths_GRP",
+    "blocked_tasks": "CloudHive_BlockedTasks_GRP",
+    "collection_triggers": "CloudHive_CollectionTriggers_GRP",
+    "collection_visuals": "CloudHive_CollectionVisuals_GRP",
+    "deposit_updates": "CloudHive_DepositUpdate_GRP",
+}
 
 
 def create_maya_scene(config=None, prior_cell_state=None):
@@ -43,7 +70,8 @@ def create_maya_scene(config=None, prior_cell_state=None):
     tasks = simulation["tasks"]
     bees = simulation["bees"]
 
-    clear_scene()
+    overview_camera_existed = _find_camera_rig_node(cmds, "camera")[0] is not None
+    clear_scene(preserve_camera=True)
     cmds.group(empty=True, name=ROOT_GROUP)
 
     visual_params = parameters.get("visual", {})
@@ -62,6 +90,7 @@ def create_maya_scene(config=None, prior_cell_state=None):
     create_honeycomb_geometry(cells, hive_params["cell_size"], cell_depth)
     create_cloud_geometry(clouds, cloud_scale=cloud_scale)
     create_flower_geometry_on_clouds(clouds, flowers_per_cloud=flowers_per_cloud)
+    create_drop_particles(drops)
     frame_duration_multiplier = max(
         0.01,
         float(visual_params.get("frame_duration_multiplier", 4.0)),
@@ -106,25 +135,100 @@ def create_maya_scene(config=None, prior_cell_state=None):
         cells,
         animation_end=animation_end,
     )
-    latest_worker_frame = max(
-        (max(record["frames"]) for record in animation_records if record["frames"]),
-        default=animation_end,
+    drop_demo_visuals = create_drop_demo_visuals(
+        drops,
+        tasks,
+        cells,
+        cell_size=hive_params["cell_size"],
     )
-    cmds.playbackOptions(maxTime=max(animation_end, latest_worker_frame + 5))
-    setup_camera_and_lighting(ground_radius)
-    _parent_known_scene_groups()
-    cmds.currentTime(1)
+    bee_selection_visuals = create_bee_task_selection_visuals(bees)
+    natural_worker_frame = max(
+        (max(record["frames"]) for record in animation_records if record["frames"]),
+        default=1,
+    )
+    collection_tasks, collection_check = create_collection_demo_tasks(
+        cells,
+        clouds,
+        bees,
+        parameters,
+    )
+    collection_visuals = create_collection_demo_visuals(
+        collection_tasks,
+        bees,
+        cells,
+        frame_start=natural_worker_frame + max(2, bee_frame_step),
+        frame_step=bee_frame_step,
+    )
+    deposit_visuals = create_deposit_update_visuals(
+        cells,
+        simulation["resource_events"],
+        cell_size=hive_params["cell_size"],
+        collection_tasks=collection_tasks,
+    )
+    collection_end = max(
+        (task.get("animation_end_frame", 1) for task in collection_tasks),
+        default=1,
+    )
+    latest_worker_frame = max(natural_worker_frame, collection_end)
+    full_animation_end = max(animation_end, latest_worker_frame + 5)
+    cmds.playbackOptions(maxTime=full_animation_end)
+    cycle_group = organize_demo_cycle_groups(simulation["summary"]["cycle_number"])
+    camera_setup = setup_camera_and_lighting(ground_radius)
+    frame_scene_overview(
+        camera_setup["camera"],
+        fallback_radius=ground_radius,
+    )
+    _parent_known_scene_groups(additional_groups=[cycle_group])
+    delivery_frames = [
+        record.get("delivery_frame")
+        for record in animation_records
+        if isinstance(record.get("delivery_frame"), (int, float))
+    ]
+    transport_starts = [
+        int(record["frames"][0])
+        for record in animation_records
+        if record.get("frames")
+    ] or [1]
+    transport_ends = [
+        int(record["frames"][-1])
+        for record in animation_records
+        if record.get("frames")
+    ] or [2]
+    collection_starts = [
+        int(task.get("animation_start_frame", 1)) for task in collection_tasks
+    ]
+    collection_ends = [
+        int(task.get("animation_end_frame", 2)) for task in collection_tasks
+    ]
+    deposit_end = max(delivery_frames + [collection_end, 2])
+    deposit_preview_start = max(1, deposit_end - max(2, int(bee_frame_step)))
+    collection_range = (
+        (min(collection_starts), max(collection_ends))
+        if collection_starts and collection_ends
+        else (1, 2)
+    )
+    stage_frames = {
+        0: 1,
+        1: 1,
+        2: 1,
+        3: 1,
+        4: min(transport_starts),
+        5: 1,
+        6: collection_range[0],
+        7: deposit_end,
+    }
+    playback_ranges = {
+        0: (1, 2),
+        1: (1, 2),
+        2: (1, 2),
+        3: (1, 2),
+        4: (min(transport_starts), max(transport_ends)),
+        5: (1, 2),
+        6: collection_range,
+        7: (deposit_preview_start, deposit_end + 8),
+    }
 
-    print("Cloud-Hive Bloomfield Maya visualization created.")
-    print("Cells: {0}, Clouds: {1}, Drops: {2}, Tasks: {3}, Bees: {4}".format(
-        len(cells),
-        len(clouds),
-        len(drops),
-        len(tasks),
-        len(bees),
-    ))
-
-    return {
+    scene_data = {
         "cells": cells,
         "clouds": clouds,
         "drops": drops,
@@ -136,7 +240,39 @@ def create_maya_scene(config=None, prior_cell_state=None):
         "resource_events": simulation["resource_events"],
         "resource_visuals": resource_visuals,
         "blocked_visuals": blocked_visuals,
+        "drop_demo_visuals": drop_demo_visuals,
+        "bee_selection_visuals": bee_selection_visuals,
+        "collection_tasks": collection_tasks,
+        "collection_check": collection_check,
+        "collection_visuals": collection_visuals,
+        "deposit_visuals": deposit_visuals,
+        "demo_visual_groups": dict(DEMO_VISUAL_GROUPS),
+        "demo_cycle_group": cycle_group,
+        "demo_stage_frames": stage_frames,
+        "demo_playback_ranges": playback_ranges,
+        "animation_full_range": (1, full_animation_end),
+        "demo_stage": 0,
     }
+    apply_demo_stage(scene_data, 0)
+
+    # A first Generate should present the deliberately wide overview. Later
+    # rebuilds preserve whichever viewport camera the user selected.
+    if not overview_camera_existed and not cmds.about(batch=True):
+        try:
+            cmds.lookThru(camera_setup["camera"])
+        except RuntimeError:
+            pass
+
+    print("Cloud-Hive Bloomfield Maya visualization created.")
+    print("Cells: {0}, Clouds: {1}, Drops: {2}, Tasks: {3}, Bees: {4}".format(
+        len(cells),
+        len(clouds),
+        len(drops),
+        len(tasks),
+        len(bees),
+    ))
+
+    return scene_data
 
 
 def schedule_task_animation(bees, tasks, drops, fall_duration=64, frame_step=22):
@@ -154,17 +290,24 @@ def schedule_task_animation(bees, tasks, drops, fall_duration=64, frame_step=22)
             drop_id = task_id[5:] if task_id.startswith("task_") else task_id
             drop = drop_by_id.get(drop_id)
             if drop is None:
+                delivery_frame = cursor + max(0, len(task["path"]) - 1) * int(frame_step)
+                task["animation_frame_start"] = int(cursor)
+                task["planned_delivery_frame"] = int(delivery_frame)
+                task["delivery_frame"] = int(delivery_frame)
+                cursor = delivery_frame + (2 * int(frame_step))
+                latest_frame = max(latest_frame, cursor)
                 continue
 
-            drop_start = cursor + int(frame_step)
+            drop_start = cursor
             drop_end = drop_start + max(24, int(fall_duration))
             delivery_frame = drop_end + max(0, len(task["path"]) - 1) * int(frame_step)
             return_frame = delivery_frame + int(frame_step)
 
             drop["animation_start_frame"] = drop_start
             drop["animation_end_frame"] = drop_end
-            task["animation_frame_start"] = cursor
+            task["animation_frame_start"] = drop_end
             task["planned_delivery_frame"] = delivery_frame
+            task["delivery_frame"] = int(delivery_frame)
             cursor = return_frame + int(frame_step)
             latest_frame = max(latest_frame, cursor)
 
@@ -200,6 +343,658 @@ def animate_assigned_bees(bees, tasks, cells, clouds, drops, frame_step=22):
     return records
 
 
+def create_collection_demo_tasks(cells, clouds, bees, parameters):
+    """Create shortage-driven collection-ready records without mutating storage.
+
+    These records drive the explanatory Stage 5/6 visuals. Natural drops and
+    capacity-aware deposits remain owned by the existing pure simulation.
+    """
+    resource_params = parameters.get("resources", {})
+    thresholds = resource_params.get("collection_thresholds", {})
+    collection_amount = max(0.0, float(resource_params.get("collection_amount", 0.4)))
+    totals = {
+        "nectar": sum(float(cell.get("nectar", 0.0)) for cell in cells),
+        "pollen": sum(float(cell.get("pollen", 0.0)) for cell in cells),
+    }
+    normalized_thresholds = {
+        "nectar": max(0.0, float(thresholds.get("nectar", 0.0))),
+        "pollen": max(0.0, float(thresholds.get("pollen", 0.0))),
+    }
+    check = {
+        "totals": totals,
+        "thresholds": normalized_thresholds,
+        "needed_resources": [],
+    }
+
+    traversable_cells = [
+        cell
+        for cell in cells
+        if not cell.get("is_blocked")
+        and cell.get("type") not in ("queen", "queen_reserved", "capped")
+    ]
+    if not traversable_cells or not clouds:
+        return [], check
+
+    cycle_number = int(parameters.get("simulation", {}).get("cycle", 0))
+    tasks = []
+    for resource_index, resource_type in enumerate(("nectar", "pollen")):
+        total = totals[resource_type]
+        threshold = normalized_thresholds[resource_type]
+        if total + 0.000001 >= threshold:
+            continue
+
+        assigned_bee = bees[resource_index % len(bees)] if bees else None
+        bee_start = (
+            assigned_bee.get("position", [0.0, 0.8, 0.0])
+            if assigned_bee
+            else [0.0, 0.8, 0.0]
+        )
+        start_cell = min(
+            traversable_cells,
+            key=lambda cell: _horizontal_distance_squared(
+                cell["position"], bee_start
+            ),
+        )
+        reachable_paths = _reachable_hive_paths(start_cell["id"], cells)
+        reachable_cells = [
+            cell for cell in traversable_cells if cell["id"] in reachable_paths
+        ]
+        if not reachable_cells:
+            continue
+
+        cloud = clouds[resource_index % len(clouds)]
+        base_cell = min(
+            reachable_cells,
+            key=lambda cell: _horizontal_distance_squared(
+                cell["position"], cloud["position"]
+            ),
+        )
+        resource_points = cloud.get("resource_points") or [cloud["position"]]
+        resource_point = resource_points[resource_index % len(resource_points)]
+        flower_position = [
+            float(resource_point[0]),
+            float(cloud["position"][1]) + 0.80,
+            float(resource_point[2]),
+        ]
+        shortage = max(0.0, threshold - total)
+        cloud_available = max(
+            0.0,
+            float(cloud.get("{0}_amount".format(resource_type), collection_amount)),
+        )
+        amount = min(shortage, collection_amount, cloud_available)
+        if amount <= 0.000001:
+            continue
+
+        task = {
+            "id": "task_collection_cycle_{0}_{1}".format(
+                cycle_number,
+                resource_type,
+            ),
+            "type": "collect_{0}".format(resource_type),
+            "origin": "collection",
+            "resource_type": resource_type,
+            "amount": amount,
+            "shortage": shortage,
+            "source_cloud": cloud["id"],
+            "assigned_bee_id": assigned_bee.get("id") if assigned_bee else None,
+            "target_flower_position": flower_position,
+            "hive_start_cell": start_cell["id"],
+            "cloud_base_cell": base_cell["id"],
+            "path": list(reachable_paths[base_cell["id"]]),
+            "movement_modes": ["on_hive", "cloud_flight", "on_hive_reentry"],
+            "status": "collection_ready",
+        }
+        tasks.append(task)
+        check["needed_resources"].append(resource_type)
+
+    return tasks, check
+
+
+def _horizontal_distance_squared(first, second):
+    """Return squared XZ distance between two 3D points."""
+    delta_x = float(first[0]) - float(second[0])
+    delta_z = float(first[2]) - float(second[2])
+    return delta_x * delta_x + delta_z * delta_z
+
+
+def _reachable_hive_paths(start_cell_id, cells):
+    """Return shortest on-hive paths from one traversable start cell."""
+    cell_by_id = {cell["id"]: cell for cell in cells}
+    start_cell = cell_by_id.get(start_cell_id)
+    if start_cell is None or start_cell.get("is_blocked"):
+        return {}
+
+    paths = {start_cell_id: [start_cell_id]}
+    queue = [start_cell_id]
+    while queue:
+        cell_id = queue.pop(0)
+        for neighbor_id in cell_by_id[cell_id].get("neighbors", []):
+            if neighbor_id in paths:
+                continue
+            neighbor = cell_by_id.get(neighbor_id)
+            if neighbor is None or neighbor.get("is_blocked"):
+                continue
+            paths[neighbor_id] = paths[cell_id] + [neighbor_id]
+            queue.append(neighbor_id)
+    return paths
+
+
+def create_drop_demo_visuals(drops, tasks, cells, cell_size):
+    """Create static mapping, validation, and outcome layers for one cycle."""
+    import maya.cmds as cmds
+
+    mapping_group = _replace_empty_group(cmds, DEMO_VISUAL_GROUPS["mapping"])
+    validation_group = _replace_empty_group(cmds, DEMO_VISUAL_GROUPS["validation"])
+    direct_group = _replace_empty_group(cmds, DEMO_VISUAL_GROUPS["direct_storage"])
+    task_group = _replace_empty_group(cmds, DEMO_VISUAL_GROUPS["task_markers"])
+
+    validation_materials = {
+        "matched": _create_maya_material(
+            cmds, "chm_demo_validation_green_MAT", (0.12, 1.0, 0.30)
+        ),
+        "mismatched": _create_maya_material(
+            cmds, "chm_demo_validation_orange_MAT", (1.0, 0.42, 0.04)
+        ),
+        "blocked": _create_maya_material(
+            cmds, "chm_demo_validation_red_MAT", (1.0, 0.04, 0.10)
+        ),
+        "unmapped": _create_maya_material(
+            cmds, "chm_demo_validation_gray_MAT", (0.45, 0.45, 0.50)
+        ),
+    }
+    direct_material = _create_maya_material(
+        cmds, "chm_demo_direct_storage_gold_MAT", (1.0, 0.82, 0.08)
+    )
+    transport_material = _create_maya_material(
+        cmds, "chm_demo_transport_task_blue_MAT", (0.10, 0.42, 1.0)
+    )
+    cleanup_material = _create_maya_material(
+        cmds, "chm_demo_cleanup_task_red_MAT", (1.0, 0.05, 0.05)
+    )
+
+    cell_by_id = {cell["id"]: cell for cell in cells}
+    task_by_id = {task["id"]: task for task in tasks}
+    created = {
+        "mapping": [],
+        "validation": [],
+        "direct_storage": [],
+        "task_markers": [],
+        "outcomes": [],
+    }
+    for index, drop in enumerate(drops):
+        cell = cell_by_id.get(drop.get("mapped_cell_id"))
+        if cell is None:
+            continue
+        drop_x, drop_y, drop_z = drop["position"]
+        cell_x, cell_y, cell_z = cell["position"]
+        mapping_curve = cmds.curve(
+            degree=1,
+            point=[
+                (drop_x, drop_y + 0.34, drop_z),
+                (cell_x, cell_y + 0.62, cell_z),
+            ],
+            name="CloudHive_mapping_{0:03d}_CRV".format(index),
+        )
+        cmds.parent(mapping_curve, mapping_group)
+        _style_demo_curve(cmds, mapping_curve, (0.10, 0.78, 1.0), line_width=3)
+        created["mapping"].append(mapping_curve)
+
+        validation = drop.get("validation_result", "unmapped")
+        highlight, _shape = cmds.polyCylinder(
+            radius=float(cell_size) * 0.76,
+            height=0.055,
+            subdivisionsX=6,
+            name="CloudHive_validation_{0:03d}".format(index),
+        )
+        cmds.xform(
+            highlight,
+            translation=(cell_x, cell_y + 0.57, cell_z),
+            rotation=(0.0, 30.0, 0.0),
+            worldSpace=True,
+        )
+        cmds.parent(highlight, validation_group)
+        _assign_maya_material(
+            cmds,
+            highlight,
+            validation_materials.get(validation, validation_materials["unmapped"]),
+        )
+        created["validation"].append(highlight)
+
+        direct_amount = float(drop.get("direct_storage_amount", 0.0))
+        if direct_amount > 0.000001:
+            direct_marker, _shape = cmds.polyCylinder(
+                radius=float(cell_size) * 0.30,
+                height=0.16,
+                subdivisionsX=6,
+                name="CloudHive_direct_storage_{0:03d}".format(index),
+            )
+            cmds.xform(
+                direct_marker,
+                translation=(cell_x, cell_y + 0.78, cell_z),
+                rotation=(0.0, 30.0, 0.0),
+                worldSpace=True,
+            )
+            cmds.parent(direct_marker, direct_group)
+            _assign_maya_material(cmds, direct_marker, direct_material)
+            created["direct_storage"].append(direct_marker)
+
+        task = task_by_id.get(drop.get("task_id"))
+        if task is not None:
+            cleanup = task.get("type") == "clean_blocked"
+            task_marker, _shape = cmds.polyCube(
+                width=0.24 if cleanup else 0.20,
+                height=0.62 if cleanup else 0.42,
+                depth=0.24 if cleanup else 0.20,
+                name="CloudHive_{0}_task_{1:03d}".format(
+                    "cleanup" if cleanup else "transport",
+                    index,
+                ),
+            )
+            cmds.xform(
+                task_marker,
+                translation=(cell_x, cell_y + 0.92, cell_z),
+                rotation=(0.0, 45.0 if cleanup else 0.0, 0.0),
+                worldSpace=True,
+            )
+            cmds.parent(task_marker, task_group)
+            _assign_maya_material(
+                cmds,
+                task_marker,
+                cleanup_material if cleanup else transport_material,
+            )
+            created["task_markers"].append(task_marker)
+
+        created["outcomes"].append({
+            "drop_id": drop.get("id"),
+            "cell_id": cell.get("id"),
+            "validation": validation,
+            "direct_storage_amount": direct_amount,
+            "task_id": task.get("id") if task else None,
+            "task_type": task.get("type") if task else None,
+        })
+
+    return created
+
+
+def create_collection_demo_visuals(collection_tasks, bees, cells, frame_start, frame_step):
+    """Create collection trigger/routes and key bee crawl-vs-flight segments."""
+    import maya.cmds as cmds
+
+    trigger_group = _replace_empty_group(
+        cmds, DEMO_VISUAL_GROUPS["collection_triggers"]
+    )
+    visual_group = _replace_empty_group(
+        cmds, DEMO_VISUAL_GROUPS["collection_visuals"]
+    )
+    nectar_material = _create_maya_material(
+        cmds, "chm_demo_collection_nectar_MAT", (1.0, 0.72, 0.05)
+    )
+    pollen_material = _create_maya_material(
+        cmds, "chm_demo_collection_pollen_MAT", (1.0, 0.30, 0.05)
+    )
+    cell_by_id = {cell["id"]: cell for cell in cells}
+    created = []
+    bee_by_id = {bee.get("id"): bee for bee in bees}
+    cursor = max(1, int(frame_start))
+    safe_step = max(1, int(frame_step))
+
+    for index, task in enumerate(collection_tasks):
+        resource_type = task.get("resource_type", "nectar")
+        resource_material = (
+            nectar_material if resource_type == "nectar" else pollen_material
+        )
+        flower_position = tuple(task["target_flower_position"])
+        trigger, _shape = cmds.polySphere(
+            radius=0.26,
+            name="CloudHive_collection_trigger_{0:02d}".format(index),
+        )
+        cmds.xform(trigger, translation=flower_position, worldSpace=True)
+        cmds.parent(trigger, trigger_group)
+        _assign_maya_material(cmds, trigger, resource_material)
+        created.append(trigger)
+
+        crawl_points = []
+        for cell_id in task.get("path", []):
+            cell = cell_by_id.get(cell_id)
+            if cell is not None:
+                x, y, z = cell["position"]
+                crawl_points.append((x, y + 0.62, z))
+        if not crawl_points:
+            continue
+
+        if len(crawl_points) > 1:
+            crawl_curve = cmds.curve(
+                degree=1,
+                point=crawl_points,
+                name="CloudHive_collection_crawl_{0:02d}_CRV".format(index),
+            )
+            cmds.parent(crawl_curve, visual_group)
+            _style_demo_curve(
+                cmds,
+                crawl_curve,
+                (0.15, 0.95, 0.72),
+                line_width=4,
+            )
+            created.append(crawl_curve)
+
+        hive_position = crawl_points[-1]
+        flight_midpoint = (
+            (hive_position[0] + flower_position[0]) * 0.5,
+            (hive_position[1] + flower_position[1]) * 0.5 + 0.45,
+            (hive_position[2] + flower_position[2]) * 0.5,
+        )
+        flight_curve = cmds.curve(
+            degree=1,
+            point=[hive_position, flight_midpoint, flower_position],
+            name="CloudHive_collection_flight_{0:02d}_CRV".format(index),
+        )
+        cmds.parent(flight_curve, visual_group)
+        _style_demo_curve(
+            cmds,
+            flight_curve,
+            (0.95, 0.30, 1.0),
+            line_width=4,
+        )
+        created.append(flight_curve)
+
+        crawl_frames = [cursor + point_index * safe_step for point_index in range(len(crawl_points))]
+        takeoff_frame = crawl_frames[-1]
+        midpoint_frame = takeoff_frame + safe_step
+        collection_frame = midpoint_frame + safe_step
+        return_midpoint_frame = collection_frame + safe_step
+        reentry_frame = return_midpoint_frame + safe_step
+        task["animation_start_frame"] = crawl_frames[0]
+        task["collection_frame"] = collection_frame
+        task["reentry_frame"] = reentry_frame
+        task["animation_end_frame"] = reentry_frame
+        task["frames"] = crawl_frames + [
+            midpoint_frame,
+            collection_frame,
+            return_midpoint_frame,
+            reentry_frame,
+        ]
+
+        if bees:
+            bee = bee_by_id.get(task.get("assigned_bee_id"))
+            if bee is None:
+                bee = bees[index % len(bees)]
+            bee_object = bee.get("maya_object")
+            task["bee_id"] = bee.get("id")
+            if bee_object and cmds.objExists(bee_object):
+                keyed_positions = list(zip(crawl_frames, crawl_points)) + [
+                    (midpoint_frame, flight_midpoint),
+                    (collection_frame, flower_position),
+                    (return_midpoint_frame, flight_midpoint),
+                    (reentry_frame, hive_position),
+                ]
+                for frame, position in keyed_positions:
+                    cmds.currentTime(frame)
+                    cmds.xform(bee_object, translation=position, worldSpace=True)
+                    cmds.setKeyframe(bee_object, attribute="translate", time=frame)
+
+                payload, _shape = cmds.polyCube(
+                    width=0.14,
+                    height=0.14,
+                    depth=0.14,
+                    name="CloudHive_collection_payload_{0:02d}".format(index),
+                )
+                parented = cmds.parent(payload, bee_object)
+                if parented:
+                    payload = parented[0]
+                if cmds.objExists(payload):
+                    cmds.xform(payload, translation=(0.0, -0.25, 0.0), objectSpace=True)
+                    _assign_maya_material(cmds, payload, resource_material)
+                    cmds.setKeyframe(
+                        payload,
+                        attribute="visibility",
+                        time=max(1, collection_frame - 1),
+                        value=0,
+                    )
+                    cmds.setKeyframe(
+                        payload,
+                        attribute="visibility",
+                        time=collection_frame,
+                        value=1,
+                    )
+                    cmds.setKeyframe(
+                        payload,
+                        attribute="visibility",
+                        time=reentry_frame,
+                        value=1,
+                    )
+                    cmds.setKeyframe(
+                        payload,
+                        attribute="visibility",
+                        time=reentry_frame + 1,
+                        value=0,
+                    )
+                    task["payload_object"] = payload
+
+        cursor = reentry_frame + safe_step * 2
+
+    return created
+
+
+def create_bee_task_selection_visuals(bees):
+    """Create static Stage 4 markers over bees that received hive tasks."""
+    import maya.cmds as cmds
+
+    group_name = _replace_empty_group(
+        cmds,
+        DEMO_VISUAL_GROUPS["bee_selections"],
+    )
+    material = _create_maya_material(
+        cmds,
+        "chm_demo_bee_selected_MAT",
+        (0.10, 0.95, 1.0),
+    )
+    created = []
+    for index, bee in enumerate(bees):
+        if not bee.get("task_queue"):
+            continue
+        bee_object = bee.get("maya_object")
+        if bee_object and cmds.objExists(bee_object):
+            x, y, z = cmds.xform(
+                bee_object,
+                query=True,
+                translation=True,
+                worldSpace=True,
+            )
+        else:
+            x, y, z = bee.get("position", [0.0, 0.8, 0.0])
+        marker, _shape = cmds.polyCylinder(
+            radius=0.34,
+            height=0.045,
+            subdivisionsX=6,
+            name="CloudHive_bee_selected_{0:02d}".format(index),
+        )
+        cmds.xform(
+            marker,
+            translation=(x, y + 0.48, z),
+            worldSpace=True,
+        )
+        cmds.parent(marker, group_name)
+        _assign_maya_material(cmds, marker, material)
+        if bee_object and cmds.objExists(bee_object):
+            cmds.pointConstraint(
+                bee_object,
+                marker,
+                maintainOffset=True,
+                name="CloudHive_bee_selected_{0:02d}_pointConstraint".format(index),
+            )
+        created.append(marker)
+    return created
+
+
+def create_deposit_update_visuals(cells, resource_events, cell_size, collection_tasks=None):
+    """Create static Stage 7 markers for deposits, full cells, and re-entry."""
+    import maya.cmds as cmds
+
+    group_name = _replace_empty_group(cmds, DEMO_VISUAL_GROUPS["deposit_updates"])
+    nectar_material = _create_maya_material(
+        cmds, "chm_demo_deposit_nectar_MAT", (1.0, 0.72, 0.04)
+    )
+    pollen_material = _create_maya_material(
+        cmds, "chm_demo_deposit_pollen_MAT", (1.0, 0.28, 0.04)
+    )
+    full_material = _create_maya_material(
+        cmds, "chm_demo_storage_full_MAT", (0.95, 0.88, 0.68)
+    )
+    reentry_material = _create_maya_material(
+        cmds, "chm_demo_collection_reentry_MAT", (0.72, 0.30, 1.0)
+    )
+    cell_by_id = {cell["id"]: cell for cell in cells}
+    created = []
+
+    for index, event in enumerate(resource_events):
+        cell = cell_by_id.get(event.get("target_cell"))
+        if cell is None:
+            continue
+        x, y, z = cell["position"]
+        marker, _shape = cmds.polyCylinder(
+            radius=float(cell_size) * 0.36,
+            height=0.10,
+            subdivisionsX=6,
+            name="CloudHive_deposit_update_{0:03d}".format(index),
+        )
+        cmds.xform(
+            marker,
+            translation=(x, y + 0.82, z),
+            rotation=(0.0, 30.0, 0.0),
+            worldSpace=True,
+        )
+        cmds.parent(marker, group_name)
+        _assign_maya_material(
+            cmds,
+            marker,
+            nectar_material
+            if event.get("resource_type") == "nectar"
+            else pollen_material,
+        )
+        created.append(marker)
+
+    for index, cell in enumerate(cells):
+        if not cell.get("blocked_by_capacity"):
+            continue
+        x, y, z = cell["position"]
+        full_marker, _shape = cmds.polyCylinder(
+            radius=float(cell_size) * 0.70,
+            height=0.07,
+            subdivisionsX=6,
+            name="CloudHive_full_storage_{0:03d}".format(index),
+        )
+        cmds.xform(
+            full_marker,
+            translation=(x, y + 1.02, z),
+            rotation=(0.0, 30.0, 0.0),
+            worldSpace=True,
+        )
+        cmds.parent(full_marker, group_name)
+        _assign_maya_material(cmds, full_marker, full_material)
+        created.append(full_marker)
+
+    for index, task in enumerate(collection_tasks or []):
+        cell = cell_by_id.get(task.get("cloud_base_cell"))
+        if cell is None:
+            continue
+        x, y, z = cell["position"]
+        marker, _shape = cmds.polySphere(
+            radius=0.20,
+            name="CloudHive_collection_reentry_{0:02d}".format(index),
+        )
+        cmds.xform(marker, translation=(x, y + 0.90, z), worldSpace=True)
+        cmds.parent(marker, group_name)
+        _assign_maya_material(cmds, marker, reentry_material)
+        created.append(marker)
+
+    return created
+
+
+def organize_demo_cycle_groups(cycle_number):
+    """Nest all prepared stage layers under one cycle-specific Maya group."""
+    import maya.cmds as cmds
+
+    cycle_group = "CloudHive_Cycle_{0:03d}_Stages_GRP".format(int(cycle_number))
+    if cmds.objExists(cycle_group):
+        cmds.delete(cycle_group)
+    cmds.group(empty=True, name=cycle_group)
+    for group_name in DEMO_VISUAL_GROUPS.values():
+        if not cmds.objExists(group_name):
+            continue
+        parents = cmds.listRelatives(group_name, parent=True) or []
+        if not parents or parents[0] != cycle_group:
+            cmds.parent(group_name, cycle_group)
+    return cycle_group
+
+
+def apply_demo_stage(scene_data, stage):
+    """Show one prepared static stage and select its playback segment."""
+    import maya.cmds as cmds
+
+    safe_stage = max(0, min(7, int(stage)))
+    visible_by_stage = {
+        0: set(),
+        1: {"falling_drops"},
+        2: {"natural_drops", "mapping", "validation"},
+        3: {"direct_storage", "task_markers", "blocked_tasks"},
+        4: {"task_markers", "bee_selections", "bfs_paths", "blocked_tasks"},
+        5: {"collection_triggers"},
+        6: {"collection_triggers", "collection_visuals"},
+        7: {"deposit_updates", "blocked_tasks"},
+    }
+    visible_keys = visible_by_stage[safe_stage]
+    groups = scene_data.get("demo_visual_groups", DEMO_VISUAL_GROUPS)
+    for group_key, group_name in groups.items():
+        if cmds.objExists(group_name + ".visibility"):
+            cmds.setAttr(group_name + ".visibility", group_key in visible_keys)
+
+    frame = int(scene_data.get("demo_stage_frames", {}).get(safe_stage, 1))
+    playback_range = scene_data.get("demo_playback_ranges", {}).get(
+        safe_stage,
+        (frame, frame + 1),
+    )
+    range_start = max(1, int(playback_range[0]))
+    range_end = max(range_start + 1, int(playback_range[1]))
+    cmds.playbackOptions(minTime=range_start, maxTime=range_end)
+    cmds.currentTime(max(range_start, min(frame, range_end)))
+    cmds.refresh(force=True)
+    scene_data["demo_stage"] = safe_stage
+    scene_data["active_demo_frame"] = cmds.currentTime(query=True)
+    scene_data["active_playback_range"] = (range_start, range_end)
+    scene_data["visible_demo_groups"] = sorted(visible_keys)
+    return {
+        "stage": safe_stage,
+        "label": DEMO_STAGE_LABELS[safe_stage],
+        "frame": scene_data["active_demo_frame"],
+        "playback_range": scene_data["active_playback_range"],
+        "visible_groups": scene_data["visible_demo_groups"],
+    }
+
+
+def _replace_empty_group(cmds, group_name):
+    """Replace one generated visual group and return its transform name."""
+    if cmds.objExists(group_name):
+        cmds.delete(group_name)
+    return cmds.group(empty=True, name=group_name)
+
+
+def _style_demo_curve(cmds, curve, color, line_width=3):
+    """Give a Maya curve an explicit viewport color and readable width."""
+    shapes = cmds.listRelatives(curve, shapes=True, fullPath=True) or []
+    for shape in shapes:
+        cmds.setAttr(shape + ".overrideEnabled", 1)
+        cmds.setAttr(shape + ".overrideRGBColors", 1)
+        cmds.setAttr(
+            shape + ".overrideColorRGB",
+            float(color[0]),
+            float(color[1]),
+            float(color[2]),
+            type="double3",
+        )
+        if cmds.attributeQuery("lineWidth", node=shape, exists=True):
+            cmds.setAttr(shape + ".lineWidth", int(line_width))
+
+
 def create_cell_resource_visuals(
     cells,
     resource_events,
@@ -225,14 +1020,40 @@ def create_cell_resource_visuals(
         cmds, "chm_cell_delivery_flash_MAT", (1.0, 0.95, 0.32)
     )
 
-    delivery_by_task = {
-        record["task_id"]: record.get("delivery_frame")
-        for record in animation_records
-    }
+    delivery_by_task = {}
+    for record in animation_records:
+        task_id = record["task_id"]
+        delivery_frame = record.get("delivery_frame")
+        try:
+            delivery_frame = int(round(float(delivery_frame)))
+        except (TypeError, ValueError):
+            keyed_frames = record.get("frames") or []
+            fallback_frame = keyed_frames[-1] if keyed_frames else 1
+            try:
+                delivery_frame = int(round(float(fallback_frame)))
+            except (TypeError, ValueError):
+                delivery_frame = 1
+            cmds.warning(
+                "Cloud-Hive Bloomfield: task '{0}' has no valid delivery frame; "
+                "using animation frame {1} for its resource visual.".format(
+                    task_id,
+                    max(1, delivery_frame),
+                )
+            )
+        delivery_by_task[task_id] = max(1, delivery_frame)
+
     events_by_cell = {}
     for event in resource_events:
         event = dict(event)
-        event["delivery_frame"] = delivery_by_task.get(event["task_id"], 1)
+        task_id = event.get("task_id", "<unknown>")
+        if task_id not in delivery_by_task:
+            delivery_frame = 1
+            cmds.warning(
+                "Cloud-Hive Bloomfield: task '{0}' has no animation record; "
+                "using frame 1 for its resource visual.".format(task_id)
+            )
+            delivery_by_task[task_id] = delivery_frame
+        event["delivery_frame"] = delivery_by_task[task_id]
         events_by_cell.setdefault(event["target_cell"], []).append(event)
 
     created = []
@@ -445,16 +1266,32 @@ def create_blocked_task_visuals(tasks, cells, animation_end=320):
     return created
 
 
-def clear_scene():
+def clear_scene(preserve_camera=False):
     """Remove previous Cloud-Hive Meadow generated objects from the Maya scene.
 
     Parameters:
-        None.
+        preserve_camera (bool): Keep the generated camera/light rig while the
+            visualization is rebuilt. The public Clear action uses the default
+            False value and removes the rig with the rest of the scene.
 
     Returns:
         None.
     """
     import maya.cmds as cmds
+
+    if preserve_camera and cmds.objExists(CAMERA_LIGHT_GROUP):
+        camera_parent = cmds.listRelatives(
+            CAMERA_LIGHT_GROUP,
+            parent=True,
+            fullPath=True,
+        ) or []
+        if camera_parent:
+            try:
+                cmds.parent(CAMERA_LIGHT_GROUP, world=True)
+            except RuntimeError:
+                # If Maya cannot detach it, deleting the root will remove it and
+                # setup_camera_and_lighting() will recreate one clean rig.
+                pass
 
     groups_to_delete = [
         ROOT_GROUP,
@@ -470,18 +1307,31 @@ def clear_scene():
         "CloudHive_FallingResources_GRP",
         "CloudHive_CellResources_GRP",
         "CloudHive_BlockedTasks_GRP",
-        "CloudHive_CameraLight_GRP",
+        "CloudHive_DropMapping_GRP",
+        "CloudHive_ValidationHighlights_GRP",
+        "CloudHive_DirectStorage_GRP",
+        "CloudHive_TaskMarkers_GRP",
+        "CloudHive_BeeSelections_GRP",
+        "CloudHive_CollectionTriggers_GRP",
+        "CloudHive_CollectionVisuals_GRP",
+        "CloudHive_DepositUpdate_GRP",
+        CAMERA_LIGHT_GROUP,
         "CloudHive_Labels_GRP",
         "CloudHiveMeadow_GRP",
     ]
+    groups_to_delete.extend(
+        cmds.ls("CloudHive_Cycle_*_Stages_GRP", type="transform") or []
+    )
 
     for group_name in groups_to_delete:
+        if preserve_camera and group_name == CAMERA_LIGHT_GROUP:
+            continue
         if cmds.objExists(group_name):
             cmds.delete(group_name)
 
 
 def setup_camera_and_lighting(scene_radius=9.0):
-    """Create a simple Maya camera and light setup.
+    """Create or reuse a stable Maya overview camera and light setup.
 
     Parameters:
         scene_radius (float): Approximate radius used to position camera/lights.
@@ -491,44 +1341,228 @@ def setup_camera_and_lighting(scene_radius=9.0):
     """
     import maya.cmds as cmds
 
-    group_name = "CloudHive_CameraLight_GRP"
+    group_name = CAMERA_LIGHT_GROUP
     if not cmds.objExists(group_name):
         cmds.group(empty=True, name=group_name)
 
-    camera_distance = max(6.0, float(scene_radius))
-    camera_transform, camera_shape = cmds.camera(name="CloudHive_Render_CAM")
-    cmds.xform(
+    camera_transform, camera_shape = _find_camera_rig_node(cmds, "camera")
+    if camera_transform is None:
+        camera_transform, camera_shape = cmds.camera()
+        camera_transform = cmds.rename(camera_transform, OVERVIEW_CAMERA)
+    camera_transform = _parent_to_camera_rig(cmds, camera_transform, group_name)
+    camera_shape = cmds.listRelatives(
         camera_transform,
-        translation=(camera_distance * 0.85, camera_distance * 0.65, camera_distance),
-        rotation=(-35.0, 38.0, 0.0),
-        worldSpace=True,
-    )
+        shapes=True,
+        type="camera",
+        fullPath=True,
+    )[0]
     cmds.setAttr(camera_shape + ".focalLength", 35)
-    cmds.parent(camera_transform, group_name)
 
-    sun_shape = cmds.directionalLight(name="CloudHive_Sun_LGT", intensity=1.28)
-    sun_light = cmds.listRelatives(sun_shape, parent=True)[0]
+    sun_light, sun_shape = _find_camera_rig_node(cmds, "directionalLight")
+    if sun_light is None:
+        sun_shape = cmds.directionalLight(intensity=1.28)
+        sun_light = cmds.listRelatives(sun_shape, parent=True, fullPath=True)[0]
+        sun_light = cmds.rename(sun_light, "CloudHive_Sun_LGT")
+    sun_light = _parent_to_camera_rig(cmds, sun_light, group_name)
+    sun_shape = cmds.listRelatives(
+        sun_light,
+        shapes=True,
+        type="directionalLight",
+        fullPath=True,
+    )[0]
     cmds.xform(sun_light, rotation=(-45.0, -30.0, 0.0), worldSpace=True)
+    cmds.setAttr(sun_shape + ".intensity", 1.28)
     cmds.setAttr(sun_shape + ".color", 1.0, 0.78, 0.48, type="double3")
-    cmds.parent(sun_light, group_name)
 
-    ambient_shape = cmds.ambientLight(name="CloudHive_Ambient_LGT", intensity=0.42)
-    ambient_light = cmds.listRelatives(ambient_shape, parent=True)[0]
+    ambient_light, ambient_shape = _find_camera_rig_node(cmds, "ambientLight")
+    if ambient_light is None:
+        ambient_shape = cmds.ambientLight(intensity=0.42)
+        ambient_light = cmds.listRelatives(
+            ambient_shape,
+            parent=True,
+            fullPath=True,
+        )[0]
+        ambient_light = cmds.rename(ambient_light, "CloudHive_Ambient_LGT")
+    ambient_light = _parent_to_camera_rig(cmds, ambient_light, group_name)
+    ambient_shape = cmds.listRelatives(
+        ambient_light,
+        shapes=True,
+        type="ambientLight",
+        fullPath=True,
+    )[0]
+    cmds.setAttr(ambient_shape + ".intensity", 0.42)
     cmds.setAttr(ambient_shape + ".color", 0.72, 0.74, 1.0, type="double3")
-    cmds.parent(ambient_light, group_name)
-
-    try:
-        cmds.lookThru(camera_transform)
-    except RuntimeError:
-        pass
 
     return {
-        "camera": camera_transform,
-        "camera_shape": camera_shape,
-        "sun_light": sun_light,
-        "sun_shape": sun_shape,
-        "ambient_light": ambient_light,
-        "ambient_shape": ambient_shape,
+        "camera": camera_transform.rsplit("|", 1)[-1],
+        "camera_shape": camera_shape.rsplit("|", 1)[-1],
+        "sun_light": sun_light.rsplit("|", 1)[-1],
+        "sun_shape": sun_shape.rsplit("|", 1)[-1],
+        "ambient_light": ambient_light.rsplit("|", 1)[-1],
+        "ambient_shape": ambient_shape.rsplit("|", 1)[-1],
+    }
+
+
+def _find_camera_rig_node(cmds, shape_type):
+    """Return one generated transform/shape pair by Maya node type."""
+    if not cmds.objExists(CAMERA_LIGHT_GROUP):
+        return None, None
+
+    shapes = cmds.listRelatives(
+        CAMERA_LIGHT_GROUP,
+        allDescendents=True,
+        fullPath=True,
+        type=shape_type,
+    ) or []
+    if not shapes:
+        return None, None
+
+    shape = sorted(shapes)[0]
+    parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+    if not parents:
+        return None, None
+    return parents[0], shape
+
+
+def _parent_to_camera_rig(cmds, transform, group_name):
+    """Parent a generated transform under the rig and return its full DAG path."""
+    group_paths = cmds.ls(group_name, long=True) or [group_name]
+    group_path = group_paths[0]
+    parents = cmds.listRelatives(transform, parent=True, fullPath=True) or []
+    if not parents or parents[0] != group_path:
+        parented = cmds.parent(transform, group_path)
+        if parented:
+            transform = parented[0]
+    transform_paths = cmds.ls(transform, long=True) or [transform]
+    return transform_paths[0]
+
+
+def frame_scene_overview(camera_transform=OVERVIEW_CAMERA, fallback_radius=9.0, padding=1.35):
+    """Place the render camera in a wide 3/4 view around generated content.
+
+    The placement is recomputed from world-space scene bounds, so cloud height,
+    drops, bees, and BFS paths are included. It never changes the active viewport
+    camera; callers may opt into the camera only for the first Generate action.
+
+    Parameters:
+        camera_transform (str): Camera transform to position.
+        fallback_radius (float): Safe framing radius if Maya cannot read bounds.
+        padding (float): Extra space around the bounded scene.
+
+    Returns:
+        dict | None: Overview center, radius, and camera distance.
+    """
+    import maya.cmds as cmds
+
+    if not cmds.objExists(camera_transform):
+        cmds.warning(
+            "Cloud-Hive Bloomfield: overview camera '{0}' does not exist.".format(
+                camera_transform
+            )
+        )
+        return None
+
+    content_groups = [
+        "CloudHive_Honeycomb_GRP",
+        "CloudHive_Clouds_GRP",
+        "CloudHive_CloudFlowers_GRP",
+        "CloudHive_ResourceDrops_GRP",
+        "CloudHive_Bees_GRP",
+        "CloudHive_BeeTaskPaths_GRP",
+        "CloudHive_FallingResources_GRP",
+        "CloudHive_CellResources_GRP",
+        "CloudHive_BlockedTasks_GRP",
+        "CloudHive_DropMapping_GRP",
+        "CloudHive_ValidationHighlights_GRP",
+        "CloudHive_DirectStorage_GRP",
+        "CloudHive_TaskMarkers_GRP",
+        "CloudHive_BeeSelections_GRP",
+        "CloudHive_CollectionTriggers_GRP",
+        "CloudHive_CollectionVisuals_GRP",
+        "CloudHive_DepositUpdate_GRP",
+        "CloudHive_Labels_GRP",
+    ]
+    bounded_nodes = [node for node in content_groups if cmds.objExists(node)]
+    bounds = None
+    if bounded_nodes:
+        try:
+            bounds = cmds.exactWorldBoundingBox(*bounded_nodes)
+        except RuntimeError:
+            bounds = None
+
+    safe_fallback = max(1.0, float(fallback_radius))
+    if bounds and len(bounds) == 6 and all(math.isfinite(value) for value in bounds):
+        center = (
+            (bounds[0] + bounds[3]) * 0.5,
+            (bounds[1] + bounds[4]) * 0.5,
+            (bounds[2] + bounds[5]) * 0.5,
+        )
+        span_x = max(0.1, bounds[3] - bounds[0])
+        span_y = max(0.1, bounds[4] - bounds[1])
+        span_z = max(0.1, bounds[5] - bounds[2])
+        bounds_radius = 0.5 * math.sqrt(
+            (span_x * span_x) + (span_y * span_y) + (span_z * span_z)
+        )
+        scene_radius = max(bounds_radius, safe_fallback)
+    else:
+        center = (0.0, safe_fallback * 0.25, 0.0)
+        scene_radius = safe_fallback
+
+    camera_shapes = cmds.listRelatives(
+        camera_transform,
+        shapes=True,
+        type="camera",
+    ) or []
+    if not camera_shapes:
+        cmds.warning(
+            "Cloud-Hive Bloomfield: overview transform '{0}' has no camera shape.".format(
+                camera_transform
+            )
+        )
+        return None
+
+    camera_shape = camera_shapes[0]
+    focal_length = 35.0
+    cmds.setAttr(camera_shape + ".focalLength", focal_length)
+    vertical_aperture = cmds.getAttr(camera_shape + ".verticalFilmAperture") * 25.4
+    vertical_fov = 2.0 * math.atan(vertical_aperture / (2.0 * focal_length))
+    half_fov_tangent = max(0.1, math.tan(vertical_fov * 0.5))
+    distance = max(12.0, scene_radius * max(1.0, float(padding)) / half_fov_tangent)
+
+    view_vector = (1.0, 0.82, 1.15)
+    view_length = math.sqrt(sum(component * component for component in view_vector))
+    view_direction = tuple(component / view_length for component in view_vector)
+    camera_position = tuple(
+        center[index] + view_direction[index] * distance
+        for index in range(3)
+    )
+    target_vector = tuple(
+        center[index] - camera_position[index]
+        for index in range(3)
+    )
+    horizontal_length = math.sqrt(
+        (target_vector[0] * target_vector[0])
+        + (target_vector[2] * target_vector[2])
+    )
+    pitch = math.degrees(math.atan2(target_vector[1], horizontal_length))
+    yaw = math.degrees(math.atan2(-target_vector[0], -target_vector[2]))
+
+    cmds.xform(
+        camera_transform,
+        translation=camera_position,
+        rotation=(pitch, yaw, 0.0),
+        worldSpace=True,
+    )
+    cmds.setAttr(camera_shape + ".nearClipPlane", 0.1)
+    cmds.setAttr(
+        camera_shape + ".farClipPlane",
+        max(1000.0, distance + scene_radius * 4.0),
+    )
+
+    return {
+        "center": center,
+        "radius": scene_radius,
+        "distance": distance,
     }
 
 
@@ -623,6 +1657,42 @@ def create_falling_resource_effects(
         start_y = cloud_y - 0.55
         start_z = cloud_z + math.cos(index * 1.3) * jitter
         size = 0.13 if resource_type == "nectar" else 0.09
+
+        # At the static Stage 1 frame, future scheduled drops would otherwise
+        # be invisible. Preview markers keep every new drop legible under its
+        # source cloud, then disappear as soon as the user presses Play.
+        if local_start > int(start_frame):
+            preview, _shape = cmds.polySphere(
+                radius=size * 1.15,
+                name="CloudHive_{0}_drop_preview_{1:03d}".format(
+                    resource_type,
+                    index,
+                ),
+            )
+            cmds.xform(
+                preview,
+                translation=(start_x, start_y, start_z),
+                worldSpace=True,
+            )
+            cmds.parent(preview, group_name)
+            _assign_maya_material(
+                cmds,
+                preview,
+                nectar_material if resource_type == "nectar" else pollen_material,
+            )
+            cmds.setKeyframe(
+                preview,
+                attribute="visibility",
+                time=int(start_frame),
+                value=1,
+            )
+            cmds.setKeyframe(
+                preview,
+                attribute="visibility",
+                time=int(start_frame) + 1,
+                value=0,
+            )
+            created.append(preview)
 
         particle, _shape = cmds.polyCube(
             width=size,
@@ -957,11 +2027,12 @@ def _random_ring_position(rng, inner_radius, outer_radius):
     return math.cos(angle) * radius, math.sin(angle) * radius
 
 
-def _parent_known_scene_groups():
+def _parent_known_scene_groups(additional_groups=None):
     """Parent generated CloudHive groups under the visualization root group.
 
     Parameters:
-        None.
+        additional_groups (list[str] | None): Extra generated groups, such as
+            the current cycle's prepared stage container.
 
     Returns:
         None.
@@ -975,18 +2046,15 @@ def _parent_known_scene_groups():
         "CloudHive_Honeycomb_GRP",
         "CloudHive_Clouds_GRP",
         "CloudHive_CloudFlowers_GRP",
-        "CloudHive_ResourceDrops_GRP",
         "CloudHive_MeadowDetails_GRP",
         "CloudHive_BeehiveBoxes_GRP",
         "CloudHive_Bees_GRP",
-        "CloudHive_BeeTaskPaths_GRP",
-        "CloudHive_FallingResources_GRP",
         "CloudHive_CellResources_GRP",
-        "CloudHive_BlockedTasks_GRP",
         "CloudHive_Ground_GRP",
         "CloudHive_CameraLight_GRP",
         "CloudHive_Labels_GRP",
     ]
+    generated_groups.extend(additional_groups or [])
 
     for group_name in generated_groups:
         if not cmds.objExists(group_name):

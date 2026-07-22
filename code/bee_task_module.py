@@ -321,6 +321,8 @@ def create_transport_task(drop, source_cell):
     return {
         "id": "task_{0}".format(drop.get("id")),
         "type": task_type,
+        "origin": drop.get("origin", "natural_drop"),
+        "source_cloud": drop.get("source_cloud"),
         "source_cell": source_cell["id"],
         "target_type": target_type,
         "target_cell": None,
@@ -348,13 +350,21 @@ def create_tasks_from_drops(drops, cells):
     tasks = []
 
     for drop in drops:
+        drop["origin"] = drop.get("origin", "natural_drop")
+        drop["validation_result"] = "unmapped"
+        drop["direct_storage_amount"] = 0.0
+        drop["task_id"] = None
         mapped_cell_id = drop.get("mapped_cell_id")
         source_cell = cell_map.get(mapped_cell_id)
         if source_cell is None:
             continue
 
+        drop["mapped_cell_type"] = source_cell.get("type")
+
         if validate_resource_cell(drop, source_cell):
+            drop["validation_result"] = "matched"
             deposited_amount = deposit_resource(drop, source_cell)
+            drop["direct_storage_amount"] = deposited_amount
             remaining_amount = max(0.0, float(drop.get("amount", 0.0)) - deposited_amount)
             if remaining_amount <= 0.000001:
                 continue
@@ -363,8 +373,13 @@ def create_tasks_from_drops(drops, cells):
             overflow_drop["amount"] = remaining_amount
             task = create_transport_task(overflow_drop, source_cell)
             task["source_contains_resource"] = False
+            drop["task_id"] = task["id"]
             tasks.append(task)
             continue
+
+        drop["validation_result"] = (
+            "blocked" if source_cell.get("is_blocked") else "mismatched"
+        )
 
         # Wrong non-blocked cells temporarily hold the resource until a bee moves
         # it to a valid storage cell. Blocked cells create cleanup tasks but do
@@ -374,6 +389,7 @@ def create_tasks_from_drops(drops, cells):
             deposited_amount = deposit_resource(drop, source_cell)
 
         task = create_transport_task(drop, source_cell)
+        drop["task_id"] = task["id"]
         if not source_cell.get("is_blocked"):
             if deposited_amount > 0.000001:
                 task["amount"] = deposited_amount
@@ -422,6 +438,7 @@ def create_tasks_from_existing_cell_resources(cells, cycle_number=0):
                 ),
                 "resource_type": resource_type,
                 "amount": amount,
+                "origin": "carryover",
             }
             task = create_transport_task(drop, cell)
             task["source_contains_resource"] = not (
@@ -841,10 +858,11 @@ def animate_bee_collection_cycle(
     frame_step=10,
     bee_index=0,
 ):
-    """Animate one worker from the hive to a cloud, drop, and BFS target.
+    """Animate one natural/carryover transport task on the honeycomb surface.
 
     The task path remains the capacity-aware BFS path assigned to the task.
-    Cloud and drop positions come directly from cloud_resource_module data.
+    Natural falling is visualized separately; a transport bee starts at the
+    landed source cell and stays on-hive while carrying the resource.
     """
     import maya.cmds as cmds
 
@@ -853,53 +871,54 @@ def animate_bee_collection_cycle(
     if not bee_object or not cmds.objExists(bee_object) or not path:
         return []
 
+    def animate_path_only_task():
+        """Animate an on-hive task and record its actual delivery frame."""
+        frames = animate_bee_on_path(bee, task, cells, frame_start, frame_step)
+        task["payload_object"] = None
+        if not frames:
+            task["delivery_frame"] = None
+            cmds.warning(
+                "Cloud-Hive Bloomfield: task '{0}' could not create path "
+                "animation keyframes.".format(task.get("id", "<unknown>"))
+            )
+            return frames
+
+        task["delivery_frame"] = int(frames[-1])
+        bee["animation_frames"] = frames
+        bee["resource_type"] = task.get("resource_type")
+        return frames
+
     drop_id = task.get("id", "")
     if drop_id.startswith("task_"):
         drop_id = drop_id[5:]
     drop = next((item for item in drops if item.get("id") == drop_id), None)
     if drop is None:
-        return animate_bee_on_path(bee, task, cells, frame_start, frame_step)
+        return animate_path_only_task()
 
-    cloud = next(
-        (item for item in clouds if item.get("id") == drop.get("source_cloud")),
-        None,
-    )
     cell_map = get_cell_map(cells)
     source_cell = cell_map.get(task.get("source_cell"))
-    if cloud is None or source_cell is None:
-        return animate_bee_on_path(bee, task, cells, frame_start, frame_step)
+    if source_cell is None:
+        return animate_path_only_task()
 
-    offset = (bee_index - 1) * 0.55
-    start_x, start_y, start_z = bee.get("position", [0.0, 0.8, 0.0])
-    cloud_x, cloud_y, cloud_z = cloud["position"]
-    source_x, source_y, source_z = source_cell["position"]
-    idle_position = (start_x + offset, start_y, start_z)
-    waypoints = [
-        idle_position,
-        (cloud_x + offset * 0.35, cloud_y + 0.55, cloud_z),
-        (cloud_x + offset * 0.2, cloud_y - 0.25, cloud_z),
-        (source_x, source_y + 0.75, source_z),
-    ]
-
-    for cell_id in path[1:]:
+    surface_height = 0.62
+    waypoints = []
+    for cell_id in path:
         cell = cell_map.get(cell_id)
         if cell is not None:
             x, y, z = cell["position"]
-            waypoints.append((x, y + 0.75, z))
+            waypoints.append((x, y + surface_height, z))
+
+    if not waypoints:
+        return animate_path_only_task()
 
     delivery_waypoint_index = len(waypoints) - 1
-    waypoints.append(idle_position)
 
     drop_start = int(drop.get("animation_start_frame", frame_start + frame_step))
     drop_end = int(drop.get("animation_end_frame", drop_start + frame_step * 2))
     waypoint_frames = [
-        max(int(frame_start), drop_start - int(frame_step)),
-        drop_start,
-        min(drop_end - 1, drop_start + 2),
-        drop_end,
+        drop_end + index * int(frame_step)
+        for index in range(len(waypoints))
     ]
-    for index in range(max(0, len(waypoints) - 4)):
-        waypoint_frames.append(drop_end + (index + 1) * int(frame_step))
 
     frames = []
     for frame, position in zip(waypoint_frames, waypoints):
@@ -909,10 +928,11 @@ def animate_bee_collection_cycle(
         frames.append(frame)
 
     resource_type = drop.get("resource_type", "nectar")
-    pickup_frame = frames[2]
+    pickup_frame = frames[0]
     delivery_frame = frames[delivery_waypoint_index]
     bee["animation_frames"] = frames
     bee["resource_type"] = resource_type
+    bee["position"] = list(waypoints[-1])
     task["delivery_frame"] = delivery_frame
     task["payload_object"] = None
 
@@ -1031,7 +1051,7 @@ def animate_bee_on_path(bee, task, cells, frame_start=1, frame_step=12):
 
     cell_map = get_cell_map(cells)
     frames = []
-    flight_height = 0.7
+    surface_height = 0.62
 
     for index, cell_id in enumerate(task.get("path", [])):
         cell = cell_map.get(cell_id)
@@ -1041,10 +1061,10 @@ def animate_bee_on_path(bee, task, cells, frame_start=1, frame_step=12):
         frame = frame_start + (index * frame_step)
         x, y, z = cell["position"]
         cmds.currentTime(frame)
-        cmds.xform(bee_object, translation=(x, y + flight_height, z), worldSpace=True)
+        cmds.xform(bee_object, translation=(x, y + surface_height, z), worldSpace=True)
         cmds.setKeyframe(bee_object, attribute="translate", time=frame)
         frames.append(frame)
-        bee["position"] = [x, y + flight_height, z]
+        bee["position"] = [x, y + surface_height, z]
 
     return frames
 

@@ -37,6 +37,11 @@ DEFAULT_INTEGRATION_PARAMETERS = {
     },
     "resources": {
         "consumption_per_cycle": 0.05,
+        "collection_thresholds": {
+            "nectar": 1.5,
+            "pollen": 1.2,
+        },
+        "collection_amount": 0.4,
     },
     "simulation": {
         "cycle": 0,
