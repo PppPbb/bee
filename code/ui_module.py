@@ -11,6 +11,9 @@ CURRENT_PARAMETERS = None
 SIMULATION_STEP = 0
 CURRENT_DEMO_STAGE = 0
 PLAYBACK_ACTIVE = False
+PLAYBACK_JOB_ID = None
+PLAYBACK_SERIAL = 0
+PLAYBACK_END_FRAME = None
 
 DEMO_STAGE_LABELS = {
     0: "Base Scene",
@@ -172,6 +175,20 @@ def _update_status(cmds):
         summary.get("stored_nectar_total", 0.0),
         summary.get("stored_pollen_total", 0.0),
     )
+    if CURRENT_DEMO_STAGE == 5:
+        collection_check = LAST_SCENE_DATA.get("collection_check", {})
+        needed = collection_check.get("needed_resources", [])
+        if needed:
+            label += "\nCollection task triggered: {0}".format(", ".join(needed))
+        else:
+            demo_resource = (
+                collection_check.get("presentation_resource") or "resource"
+            )
+            label += "\nNo shortage; demonstrating {0} collection".format(
+                demo_resource
+            )
+    elif CURRENT_DEMO_STAGE == 6:
+        label += "\nCloud collection transition"
     _set_status(cmds, label)
 
 
@@ -188,6 +205,121 @@ def _build_scene_without_viewport_scrub(cmds, create_scene, *args, **kwargs):
         cmds.refresh(force=True)
 
 
+def _kill_playback_job(cmds):
+    """Remove the one-shot Maya playback completion callback, when present."""
+    global PLAYBACK_JOB_ID
+
+    job_id = PLAYBACK_JOB_ID
+    PLAYBACK_JOB_ID = None
+    if job_id:
+        try:
+            if cmds.scriptJob(exists=job_id):
+                cmds.scriptJob(kill=job_id, force=True)
+        except RuntimeError:
+            pass
+
+
+def _cancel_stage_playback(cmds):
+    """Stop an active stage preview without jumping to its end frame."""
+    global PLAYBACK_ACTIVE, PLAYBACK_SERIAL, PLAYBACK_END_FRAME
+
+    _kill_playback_job(cmds)
+    PLAYBACK_SERIAL += 1
+    cmds.play(state=False)
+    PLAYBACK_ACTIVE = False
+    PLAYBACK_END_FRAME = None
+
+
+def _stage_playback_finished(serial, end_frame):
+    """Leave a completed stage on its authored final visual state."""
+    import maya.cmds as cmds
+
+    global PLAYBACK_ACTIVE, PLAYBACK_JOB_ID, PLAYBACK_END_FRAME
+
+    if serial != PLAYBACK_SERIAL:
+        return False
+    PLAYBACK_JOB_ID = None
+    PLAYBACK_ACTIVE = False
+    PLAYBACK_END_FRAME = None
+    cmds.currentTime(int(end_frame))
+    if LAST_SCENE_DATA is not None:
+        LAST_SCENE_DATA["active_demo_frame"] = cmds.currentTime(query=True)
+        LAST_SCENE_DATA["transition_complete"] = True
+    _update_status(cmds)
+    cmds.refresh(force=True)
+    return True
+
+
+def play_stage_transition(scene_data=None, stage=None):
+    """Play one prepared stage segment once, then stop on its final frame."""
+    import maya.cmds as cmds
+
+    global PLAYBACK_ACTIVE, PLAYBACK_JOB_ID, PLAYBACK_SERIAL
+    global PLAYBACK_END_FRAME
+
+    active_scene = scene_data or LAST_SCENE_DATA
+    active_stage = CURRENT_DEMO_STAGE if stage is None else int(stage)
+    if not active_scene:
+        return False
+    playback_range = active_scene.get("demo_playback_ranges", {}).get(active_stage)
+    if not playback_range:
+        return False
+    start_frame = int(playback_range[0])
+    end_frame = max(start_frame + 1, int(playback_range[1]))
+
+    _cancel_stage_playback(cmds)
+    cmds.playbackOptions(
+        minTime=start_frame,
+        maxTime=end_frame,
+        loop="once",
+        view="active",
+    )
+    cmds.currentTime(start_frame)
+    cmds.refresh(force=True)
+
+    PLAYBACK_SERIAL += 1
+    serial = PLAYBACK_SERIAL
+    PLAYBACK_END_FRAME = end_frame
+    PLAYBACK_ACTIVE = True
+    active_scene["transition_complete"] = False
+    active_scene["last_played_stage"] = active_stage
+    active_scene["last_played_range"] = (start_frame, end_frame)
+
+    if cmds.about(batch=True):
+        cmds.play(forward=True)
+        _stage_playback_finished(serial, end_frame)
+        return True
+
+    conditions = cmds.scriptJob(listConditions=True) or []
+    if "playingBack" in conditions:
+        job_options = {
+            "conditionFalse": [
+                "playingBack",
+                lambda: _stage_playback_finished(serial, end_frame),
+            ],
+            "runOnce": True,
+        }
+        if cmds.window(WINDOW_NAME, exists=True):
+            job_options["parent"] = WINDOW_NAME
+        PLAYBACK_JOB_ID = cmds.scriptJob(**job_options)
+        try:
+            cmds.play(forward=True)
+        except Exception:
+            _kill_playback_job(cmds)
+            PLAYBACK_ACTIVE = False
+            PLAYBACK_END_FRAME = None
+            raise
+        return True
+
+    # Defensive fallback for an unusual interactive Maya session without the
+    # playingBack condition. Stage ranges are deliberately short.
+    try:
+        cmds.play(forward=True, wait=True)
+    finally:
+        _stage_playback_finished(serial, end_frame)
+    return True
+
+
 def generate_from_ui(*_args):
     """Read UI values, rerun the algorithms, and rebuild the Maya scene."""
     import maya.cmds as cmds
@@ -197,8 +329,7 @@ def generate_from_ui(*_args):
     global LAST_SCENE_DATA, CURRENT_PARAMETERS, SIMULATION_STEP, CURRENT_DEMO_STAGE
     global PLAYBACK_ACTIVE
     _ensure_controls(cmds)
-    cmds.play(state=False)
-    PLAYBACK_ACTIVE = False
+    _cancel_stage_playback(cmds)
     CURRENT_PARAMETERS = _read_parameters(cmds)
     CURRENT_PARAMETERS.setdefault("simulation", {})["cycle"] = 0
     SIMULATION_STEP = 0
@@ -224,8 +355,7 @@ def clear_scene_from_ui(*_args):
     from visual_module import clear_scene
 
     global LAST_SCENE_DATA, SIMULATION_STEP, CURRENT_DEMO_STAGE, PLAYBACK_ACTIVE
-    cmds.play(state=False)
-    PLAYBACK_ACTIVE = False
+    _cancel_stage_playback(cmds)
     clear_scene()
     LAST_SCENE_DATA = None
     SIMULATION_STEP = 0
@@ -248,11 +378,10 @@ def run_pure_python_summary(*_args):
 
 
 def next_simulation_step(*_args):
-    """Advance one prepared demo stage without autoplaying the timeline.
+    """Advance and play one prepared demo-stage transition.
 
-    Stages 1 through 7 only switch visibility and timeline context. A new
-    simulation cycle is authored once, under suspended redraw, when the user
-    advances after Stage 7.
+    A new simulation cycle is authored once, under suspended redraw, when the
+    user advances after Stage 7. Other clicks only use prepared keyframes.
     """
     import maya.cmds as cmds
     from main import print_summary
@@ -263,10 +392,22 @@ def next_simulation_step(*_args):
     _ensure_controls(cmds)
 
     if PLAYBACK_ACTIVE:
-        message = "Pause the active animation before advancing the demo stage."
-        _set_status(cmds, message)
-        print(message)
-        return LAST_SCENE_DATA
+        is_running = True
+        try:
+            queried_state = cmds.play(query=True, state=True)
+            if queried_state is not None:
+                is_running = bool(queried_state)
+        except RuntimeError:
+            pass
+        if is_running:
+            message = "Current stage transition is still playing."
+            _set_status(cmds, message)
+            print(message)
+            return LAST_SCENE_DATA
+        _stage_playback_finished(
+            PLAYBACK_SERIAL,
+            PLAYBACK_END_FRAME or cmds.currentTime(query=True),
+        )
 
     if LAST_SCENE_DATA is None:
         generate_from_ui()
@@ -299,9 +440,8 @@ def next_simulation_step(*_args):
         DEMO_STAGE_LABELS[CURRENT_DEMO_STAGE],
     ))
     print(
-        "Cycle {0} | Static frame {1:g} | Play range {2:g}-{3:g}".format(
+        "Cycle {0} | Transition range {1:g}-{2:g}".format(
             SIMULATION_STEP,
-            stage_state["frame"],
             stage_state["playback_range"][0],
             stage_state["playback_range"][1],
         )
@@ -323,46 +463,29 @@ def next_simulation_step(*_args):
         if needed:
             print("Collection triggered for: {0}.".format(", ".join(needed)))
         else:
-            print("No collection is needed this cycle.")
+            demo_resource = (
+                collection_check.get("presentation_resource") or "resource"
+            )
+            print(
+                "No shortage this cycle; showing a presentation-safe {0} "
+                "collection preview.".format(demo_resource)
+            )
     elif CURRENT_DEMO_STAGE == 6:
         if LAST_SCENE_DATA.get("collection_tasks"):
-            print("Stage 6 - Cloud Collection Ready. Click Play to watch.")
+            print("Stage 6 - Cloud Collection transition playing.")
         else:
             print("No cloud collection segment is required this cycle.")
     elif CURRENT_DEMO_STAGE == 7:
         print_summary(LAST_SCENE_DATA)
         print("Next Simulation Step will prepare Cycle {0}.".format(SIMULATION_STEP + 1))
 
+    play_stage_transition(LAST_SCENE_DATA, CURRENT_DEMO_STAGE)
     return LAST_SCENE_DATA
 
 
 def play_animation(*_args):
-    """Play the active stage's prepared timeline segment."""
-    import maya.cmds as cmds
-
-    global PLAYBACK_ACTIVE
-
-    animated_stage = CURRENT_DEMO_STAGE in (4, 7)
-    if CURRENT_DEMO_STAGE == 6:
-        animated_stage = bool(
-            LAST_SCENE_DATA and LAST_SCENE_DATA.get("collection_tasks")
-        )
-    if not animated_stage:
-        print(
-            "Stage {0} is a static explanation. Use Next Simulation Step to continue.".format(
-                CURRENT_DEMO_STAGE
-            )
-        )
-        PLAYBACK_ACTIVE = False
-        return None
-
-    range_start = cmds.playbackOptions(query=True, minTime=True)
-    range_end = cmds.playbackOptions(query=True, maxTime=True)
-    current_frame = cmds.currentTime(query=True)
-    if current_frame < range_start or current_frame >= range_end:
-        cmds.currentTime(range_start)
-    cmds.play(forward=True)
-    PLAYBACK_ACTIVE = True
+    """Replay the current stage's prepared transition segment once."""
+    return play_stage_transition(LAST_SCENE_DATA, CURRENT_DEMO_STAGE)
 
 
 def pause_animation(*_args):
@@ -371,8 +494,7 @@ def pause_animation(*_args):
 
     global PLAYBACK_ACTIVE
 
-    cmds.play(state=False)
-    PLAYBACK_ACTIVE = False
+    _cancel_stage_playback(cmds)
 
 
 def reset_animation(*_args):
@@ -381,8 +503,7 @@ def reset_animation(*_args):
 
     global PLAYBACK_ACTIVE
 
-    cmds.play(state=False)
-    PLAYBACK_ACTIVE = False
+    _cancel_stage_playback(cmds)
     cmds.currentTime(1)
 
 
@@ -406,6 +527,7 @@ def show_ui(initial_scene_data=None):
 
     global LAST_SCENE_DATA, CURRENT_PARAMETERS, SIMULATION_STEP, CURRENT_DEMO_STAGE
     global PLAYBACK_ACTIVE
+    _cancel_stage_playback(cmds)
     defaults = copy.deepcopy(load_parameters())
     LAST_SCENE_DATA = initial_scene_data
     CURRENT_PARAMETERS = copy.deepcopy(defaults)
@@ -528,7 +650,7 @@ def show_ui(initial_scene_data=None):
     cmds.setParent("..")
 
     CONTROLS["status"] = cmds.text(
-        label="Adjust parameters, then generate.", align="left", height=54,
+        label="Adjust parameters, then generate.", align="left", height=70,
     )
 
     cmds.showWindow(window)

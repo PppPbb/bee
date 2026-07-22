@@ -20,6 +20,17 @@ from main import load_parameters, run_simulation
 ROOT_GROUP = "CloudHive_Visualization_GRP"
 CAMERA_LIGHT_GROUP = "CloudHive_CameraLight_GRP"
 OVERVIEW_CAMERA = "CloudHive_Render_CAM"
+LEGACY_ANIMATION_START = 1000
+DEMO_STAGE_BASE_RANGES = {
+    0: (1, 2),
+    1: (10, 58),
+    2: (70, 94),
+    3: (106, 136),
+    4: (148, 196),
+    5: (208, 238),
+}
+DEMO_COLLECTION_START = 250
+DEMO_COLLECTION_FRAME_STEP = 6
 DEMO_STAGE_LABELS = {
     0: "Base Scene",
     1: "Natural Resource Drop",
@@ -104,17 +115,29 @@ def create_maya_scene(config=None, prior_cell_state=None):
         drops,
         fall_duration=drop_fall_frames,
         frame_step=bee_frame_step,
+        start_frame=LEGACY_ANIMATION_START,
     )
     animation_end = max(animation_end, scheduled_end)
-    create_falling_resource_effects(
-        drops,
-        clouds,
-        end_frame=animation_end,
-        fall_duration=drop_fall_frames,
-    )
+    # The compact Stage 1 transition uses the existing landing markers. Keep
+    # the legacy falling group present for stable group bookkeeping without
+    # authoring a second long drop animation that the demo no longer plays.
+    _replace_empty_group(cmds, DEMO_VISUAL_GROUPS["falling_drops"])
     create_bee_geometry(bees, bee_scale=bee_scale)
+    bee_base_transforms = {
+        bee["id"]: list(
+            cmds.xform(
+                bee["maya_object"],
+                query=True,
+                translation=True,
+                worldSpace=True,
+            )
+        )
+        for bee in bees
+        if bee.get("maya_object") and cmds.objExists(bee["maya_object"])
+    }
+    path_visuals = []
     if show_paths:
-        create_task_path_visuals(tasks, cells)
+        path_visuals = create_task_path_visuals(tasks, cells)
     animation_records = animate_assigned_bees(
         bees,
         tasks,
@@ -142,10 +165,6 @@ def create_maya_scene(config=None, prior_cell_state=None):
         cell_size=hive_params["cell_size"],
     )
     bee_selection_visuals = create_bee_task_selection_visuals(bees)
-    natural_worker_frame = max(
-        (max(record["frames"]) for record in animation_records if record["frames"]),
-        default=1,
-    )
     collection_tasks, collection_check = create_collection_demo_tasks(
         cells,
         clouds,
@@ -156,8 +175,8 @@ def create_maya_scene(config=None, prior_cell_state=None):
         collection_tasks,
         bees,
         cells,
-        frame_start=natural_worker_frame + max(2, bee_frame_step),
-        frame_step=bee_frame_step,
+        frame_start=DEMO_COLLECTION_START,
+        frame_step=DEMO_COLLECTION_FRAME_STEP,
     )
     deposit_visuals = create_deposit_update_visuals(
         cells,
@@ -167,11 +186,50 @@ def create_maya_scene(config=None, prior_cell_state=None):
     )
     collection_end = max(
         (task.get("animation_end_frame", 1) for task in collection_tasks),
-        default=1,
+        default=DEMO_COLLECTION_START + 48,
     )
-    latest_worker_frame = max(natural_worker_frame, collection_end)
-    full_animation_end = max(animation_end, latest_worker_frame + 5)
-    cmds.playbackOptions(maxTime=full_animation_end)
+    stage_six_end = max(DEMO_COLLECTION_START + 48, int(collection_end))
+    stage_seven_start = stage_six_end + 12
+    stage_seven_end = stage_seven_start + 40
+    playback_ranges = dict(DEMO_STAGE_BASE_RANGES)
+    playback_ranges.update({
+        6: (DEMO_COLLECTION_START, stage_six_end),
+        7: (stage_seven_start, stage_seven_end),
+    })
+    stage_frames = {
+        stage: frame_range[0]
+        for stage, frame_range in playback_ranges.items()
+    }
+    transition_visuals = author_demo_stage_transitions(
+        drops=drops,
+        clouds=clouds,
+        cells=cells,
+        resource_events=simulation["resource_events"],
+        bees=bees,
+        bee_base_transforms=bee_base_transforms,
+        path_visuals=path_visuals,
+        blocked_visuals=blocked_visuals,
+        drop_demo_visuals=drop_demo_visuals,
+        bee_selection_visuals=bee_selection_visuals,
+        collection_tasks=collection_tasks,
+        deposit_visuals=deposit_visuals,
+        stage_ranges=playback_ranges,
+        cell_depth=cell_depth,
+    )
+    natural_worker_frame = max(
+        (max(record["frames"]) for record in animation_records if record["frames"]),
+        default=LEGACY_ANIMATION_START,
+    )
+    full_animation_end = max(
+        animation_end,
+        natural_worker_frame + 5,
+        stage_seven_end + 5,
+    )
+    cmds.playbackOptions(
+        animationStartTime=1,
+        animationEndTime=full_animation_end,
+        maxTime=full_animation_end,
+    )
     cycle_group = organize_demo_cycle_groups(simulation["summary"]["cycle_number"])
     camera_setup = setup_camera_and_lighting(ground_radius)
     frame_scene_overview(
@@ -179,54 +237,6 @@ def create_maya_scene(config=None, prior_cell_state=None):
         fallback_radius=ground_radius,
     )
     _parent_known_scene_groups(additional_groups=[cycle_group])
-    delivery_frames = [
-        record.get("delivery_frame")
-        for record in animation_records
-        if isinstance(record.get("delivery_frame"), (int, float))
-    ]
-    transport_starts = [
-        int(record["frames"][0])
-        for record in animation_records
-        if record.get("frames")
-    ] or [1]
-    transport_ends = [
-        int(record["frames"][-1])
-        for record in animation_records
-        if record.get("frames")
-    ] or [2]
-    collection_starts = [
-        int(task.get("animation_start_frame", 1)) for task in collection_tasks
-    ]
-    collection_ends = [
-        int(task.get("animation_end_frame", 2)) for task in collection_tasks
-    ]
-    deposit_end = max(delivery_frames + [collection_end, 2])
-    deposit_preview_start = max(1, deposit_end - max(2, int(bee_frame_step)))
-    collection_range = (
-        (min(collection_starts), max(collection_ends))
-        if collection_starts and collection_ends
-        else (1, 2)
-    )
-    stage_frames = {
-        0: 1,
-        1: 1,
-        2: 1,
-        3: 1,
-        4: min(transport_starts),
-        5: 1,
-        6: collection_range[0],
-        7: deposit_end,
-    }
-    playback_ranges = {
-        0: (1, 2),
-        1: (1, 2),
-        2: (1, 2),
-        3: (1, 2),
-        4: (min(transport_starts), max(transport_ends)),
-        5: (1, 2),
-        6: collection_range,
-        7: (deposit_preview_start, deposit_end + 8),
-    }
 
     scene_data = {
         "cells": cells,
@@ -246,9 +256,14 @@ def create_maya_scene(config=None, prior_cell_state=None):
         "collection_check": collection_check,
         "collection_visuals": collection_visuals,
         "deposit_visuals": deposit_visuals,
+        "transition_visuals": transition_visuals,
         "demo_visual_groups": dict(DEMO_VISUAL_GROUPS),
         "demo_cycle_group": cycle_group,
         "demo_stage_frames": stage_frames,
+        "demo_stage_end_frames": {
+            stage: frame_range[1]
+            for stage, frame_range in playback_ranges.items()
+        },
         "demo_playback_ranges": playback_ranges,
         "animation_full_range": (1, full_animation_end),
         "demo_stage": 0,
@@ -275,14 +290,21 @@ def create_maya_scene(config=None, prior_cell_state=None):
     return scene_data
 
 
-def schedule_task_animation(bees, tasks, drops, fall_duration=64, frame_step=22):
+def schedule_task_animation(
+    bees,
+    tasks,
+    drops,
+    fall_duration=64,
+    frame_step=22,
+    start_frame=1,
+):
     """Lay out each worker's complete task queue on one Maya timeline."""
     task_by_id = {task["id"]: task for task in tasks}
     drop_by_id = {drop["id"]: drop for drop in drops}
-    latest_frame = 1
+    latest_frame = max(1, int(start_frame))
 
     for bee_index, bee in enumerate(bees):
-        cursor = 1 + bee_index * 6
+        cursor = max(1, int(start_frame)) + bee_index * 6
         for task_id in bee.get("task_queue", []):
             task = task_by_id.get(task_id)
             if task is None or not task.get("path"):
@@ -364,6 +386,7 @@ def create_collection_demo_tasks(cells, clouds, bees, parameters):
         "totals": totals,
         "thresholds": normalized_thresholds,
         "needed_resources": [],
+        "presentation_resource": None,
     }
 
     traversable_cells = [
@@ -377,13 +400,31 @@ def create_collection_demo_tasks(cells, clouds, bees, parameters):
 
     cycle_number = int(parameters.get("simulation", {}).get("cycle", 0))
     tasks = []
-    for resource_index, resource_type in enumerate(("nectar", "pollen")):
+    resource_types = ("nectar", "pollen")
+    needed_resources = [
+        resource_type
+        for resource_type in resource_types
+        if totals[resource_type] + 0.000001
+        < normalized_thresholds[resource_type]
+    ]
+    presentation_only = not needed_resources
+    if presentation_only:
+        def reserve_ratio(resource_type):
+            threshold = max(0.000001, normalized_thresholds[resource_type])
+            return totals[resource_type] / threshold
+
+        planned_resources = [min(resource_types, key=reserve_ratio)]
+        check["presentation_resource"] = planned_resources[0]
+    else:
+        planned_resources = needed_resources
+        check["needed_resources"] = list(needed_resources)
+
+    for task_index, resource_type in enumerate(planned_resources):
+        resource_index = resource_types.index(resource_type)
         total = totals[resource_type]
         threshold = normalized_thresholds[resource_type]
-        if total + 0.000001 >= threshold:
-            continue
 
-        assigned_bee = bees[resource_index % len(bees)] if bees else None
+        assigned_bee = bees[task_index % len(bees)] if bees else None
         bee_start = (
             assigned_bee.get("position", [0.0, 0.8, 0.0])
             if assigned_bee
@@ -421,17 +462,20 @@ def create_collection_demo_tasks(cells, clouds, bees, parameters):
             0.0,
             float(cloud.get("{0}_amount".format(resource_type), collection_amount)),
         )
-        amount = min(shortage, collection_amount, cloud_available)
+        requested_amount = collection_amount if presentation_only else shortage
+        amount = min(requested_amount, collection_amount, cloud_available)
         if amount <= 0.000001:
             continue
 
         task = {
-            "id": "task_collection_cycle_{0}_{1}".format(
+            "id": "task_{0}_cycle_{1}_{2}".format(
+                "collection_demo" if presentation_only else "collection",
                 cycle_number,
                 resource_type,
             ),
             "type": "collect_{0}".format(resource_type),
-            "origin": "collection",
+            "origin": "collection_demo" if presentation_only else "collection",
+            "presentation_only": presentation_only,
             "resource_type": resource_type,
             "amount": amount,
             "shortage": shortage,
@@ -445,7 +489,6 @@ def create_collection_demo_tasks(cells, clouds, bees, parameters):
             "status": "collection_ready",
         }
         tasks.append(task)
-        check["needed_resources"].append(resource_type)
 
     return tasks, check
 
@@ -477,6 +520,20 @@ def _reachable_hive_paths(start_cell_id, cells):
             paths[neighbor_id] = paths[cell_id] + [neighbor_id]
             queue.append(neighbor_id)
     return paths
+
+
+def _sample_demo_points(points, max_points=6):
+    """Keep endpoints while reducing a long path to a readable preview."""
+    safe_points = list(points)
+    limit = max(2, int(max_points))
+    if len(safe_points) <= limit:
+        return safe_points
+    last_index = len(safe_points) - 1
+    indices = sorted({
+        int(round(step * last_index / float(limit - 1)))
+        for step in range(limit)
+    })
+    return [safe_points[index] for index in indices]
 
 
 def create_drop_demo_visuals(drops, tasks, cells, cell_size):
@@ -635,10 +692,11 @@ def create_collection_demo_visuals(collection_tasks, bees, cells, frame_start, f
     cell_by_id = {cell["id"]: cell for cell in cells}
     created = []
     bee_by_id = {bee.get("id"): bee for bee in bees}
-    cursor = max(1, int(frame_start))
+    base_cursor = max(1, int(frame_start))
     safe_step = max(1, int(frame_step))
 
     for index, task in enumerate(collection_tasks):
+        cursor = base_cursor + index * max(1, safe_step // 2)
         resource_type = task.get("resource_type", "nectar")
         resource_material = (
             nectar_material if resource_type == "nectar" else pollen_material
@@ -653,12 +711,46 @@ def create_collection_demo_visuals(collection_tasks, bees, cells, frame_start, f
         _assign_maya_material(cmds, trigger, resource_material)
         created.append(trigger)
 
+        halo, _shape = cmds.polyCylinder(
+            radius=0.48,
+            height=0.045,
+            subdivisionsX=18,
+            name="CloudHive_collection_shortage_halo_{0:02d}".format(index),
+        )
+        cmds.xform(
+            halo,
+            translation=(flower_position[0], flower_position[1] - 0.16, flower_position[2]),
+            worldSpace=True,
+        )
+        cmds.parent(halo, trigger_group)
+        _assign_maya_material(cmds, halo, resource_material)
+        created.append(halo)
+
+        base_cell = cell_by_id.get(task.get("cloud_base_cell"))
+        if base_cell is not None:
+            base_x, base_y, base_z = base_cell["position"]
+            task_marker, _shape = cmds.polyCube(
+                width=0.24,
+                height=0.62,
+                depth=0.24,
+                name="CloudHive_collection_task_marker_{0:02d}".format(index),
+            )
+            cmds.xform(
+                task_marker,
+                translation=(base_x, base_y + 0.92, base_z),
+                worldSpace=True,
+            )
+            cmds.parent(task_marker, trigger_group)
+            _assign_maya_material(cmds, task_marker, resource_material)
+            created.append(task_marker)
+
         crawl_points = []
         for cell_id in task.get("path", []):
             cell = cell_by_id.get(cell_id)
             if cell is not None:
                 x, y, z = cell["position"]
                 crawl_points.append((x, y + 0.62, z))
+        crawl_points = _sample_demo_points(crawl_points, max_points=6)
         if not crawl_points:
             continue
 
@@ -770,8 +862,6 @@ def create_collection_demo_visuals(collection_tasks, bees, cells, frame_start, f
                     )
                     task["payload_object"] = payload
 
-        cursor = reentry_frame + safe_step * 2
-
     return created
 
 
@@ -794,12 +884,10 @@ def create_bee_task_selection_visuals(bees):
             continue
         bee_object = bee.get("maya_object")
         if bee_object and cmds.objExists(bee_object):
-            x, y, z = cmds.xform(
-                bee_object,
-                query=True,
-                translation=True,
-                worldSpace=True,
-            )
+            bounds = cmds.exactWorldBoundingBox(bee_object)
+            x = (bounds[0] + bounds[3]) * 0.5
+            y = bounds[4]
+            z = (bounds[2] + bounds[5]) * 0.5
         else:
             x, y, z = bee.get("position", [0.0, 0.8, 0.0])
         marker, _shape = cmds.polyCylinder(
@@ -910,6 +998,432 @@ def create_deposit_update_visuals(cells, resource_events, cell_size, collection_
     return created
 
 
+def author_demo_stage_transitions(
+    drops,
+    clouds,
+    cells,
+    resource_events,
+    bees,
+    bee_base_transforms,
+    path_visuals,
+    blocked_visuals,
+    drop_demo_visuals,
+    bee_selection_visuals,
+    collection_tasks,
+    deposit_visuals,
+    stage_ranges,
+    cell_depth,
+):
+    """Author compact keyed previews for the seven prepared demo stages."""
+    import maya.cmds as cmds
+
+    stage_objects = {stage: [] for stage in range(1, 8)}
+
+    stage_one_start, stage_one_end = stage_ranges[1]
+    cloud_by_id = {cloud["id"]: cloud for cloud in clouds}
+    for index, drop in enumerate(drops):
+        marker = drop.get("maya_object")
+        cloud = cloud_by_id.get(drop.get("source_cloud"))
+        if not marker or not cmds.objExists(marker) or cloud is None:
+            continue
+        local_start = stage_one_start + (index % 6) * 2
+        local_end = stage_one_end - ((len(drops) - index - 1) % 4)
+        cloud_x, cloud_y, cloud_z = cloud["position"]
+        landing_x, landing_y, landing_z = drop["position"]
+        source = (
+            cloud_x + math.sin(index * 1.7) * 0.42,
+            cloud_y - 0.50,
+            cloud_z + math.cos(index * 1.3) * 0.42,
+        )
+        landing = (landing_x, landing_y + 0.18, landing_z)
+        _key_visibility_hold(cmds, marker, stage_one_start, local_start, stage_one_end)
+        _key_translation(cmds, marker, local_start, source)
+        _key_translation(cmds, marker, local_end, landing)
+        _key_scale_values(cmds, marker, local_start, 0.45)
+        _key_scale_values(cmds, marker, local_end, 1.0)
+        drop["demo_transition_start"] = local_start
+        drop["demo_transition_end"] = local_end
+        stage_objects[1].append(marker)
+
+    stage_two_start, stage_two_end = stage_ranges[2]
+    mapping_nodes = list(drop_demo_visuals.get("mapping", []))
+    validation_nodes = list(drop_demo_visuals.get("validation", []))
+    _key_reveal_sequence(cmds, mapping_nodes, stage_two_start, stage_two_end)
+    _key_pop_sequence(cmds, validation_nodes, stage_two_start, stage_two_end)
+    stage_objects[2].extend(mapping_nodes + validation_nodes)
+
+    stage_three_start, stage_three_end = stage_ranges[3]
+    direct_nodes = list(drop_demo_visuals.get("direct_storage", []))
+    task_nodes = list(drop_demo_visuals.get("task_markers", []))
+    stage_three_nodes = direct_nodes + task_nodes + list(blocked_visuals)
+    _key_pop_sequence(cmds, stage_three_nodes, stage_three_start, stage_three_end)
+    for node in direct_nodes:
+        if not cmds.objExists(node + ".translateY"):
+            continue
+        final_y = float(cmds.getAttr(node + ".translateY"))
+        cmds.setKeyframe(
+            node,
+            attribute="translateY",
+            time=stage_three_start,
+            value=final_y + 0.55,
+        )
+        cmds.setKeyframe(
+            node,
+            attribute="translateY",
+            time=stage_three_end,
+            value=final_y,
+        )
+    stage_objects[3].extend(stage_three_nodes)
+
+    stage_four_start, stage_four_end = stage_ranges[4]
+    _key_reveal_sequence(cmds, path_visuals, stage_four_start, stage_four_end)
+    _key_pop_sequence(
+        cmds,
+        bee_selection_visuals,
+        stage_four_start,
+        stage_four_end,
+        peak_scale=1.45,
+    )
+    stage_objects[4].extend(list(path_visuals) + list(bee_selection_visuals))
+
+    stage_five_start, stage_five_end = stage_ranges[5]
+    trigger_nodes = _group_transform_children(
+        cmds,
+        DEMO_VISUAL_GROUPS["collection_triggers"],
+    )
+    _key_pop_sequence(
+        cmds,
+        trigger_nodes,
+        stage_five_start,
+        stage_five_end,
+        peak_scale=1.35,
+    )
+    stage_objects[5].extend(trigger_nodes)
+
+    stage_six_start, stage_six_end = stage_ranges[6]
+    collection_nodes = _group_transform_children(
+        cmds,
+        DEMO_VISUAL_GROUPS["collection_visuals"],
+    )
+    _key_reveal_sequence(
+        cmds,
+        collection_nodes,
+        stage_six_start,
+        min(stage_six_end, stage_six_start + 18),
+    )
+    _key_bee_demo_holds(
+        cmds,
+        bees,
+        bee_base_transforms,
+        collection_tasks,
+        stage_six_start,
+        stage_six_end,
+        stage_ranges[7][1],
+    )
+    for task in collection_tasks:
+        payload = task.get("payload_object")
+        if not payload or not cmds.objExists(payload):
+            continue
+        cmds.setKeyframe(
+            payload,
+            attribute="visibility",
+            time=stage_six_end,
+            value=1,
+        )
+        cmds.setKeyframe(
+            payload,
+            attribute="visibility",
+            time=stage_ranges[7][0],
+            value=0,
+        )
+    stage_objects[6].extend(collection_nodes)
+    stage_objects[6].extend([
+        task.get("payload_object")
+        for task in collection_tasks
+        if task.get("payload_object")
+    ])
+
+    stage_seven_start, stage_seven_end = stage_ranges[7]
+    _key_pop_sequence(
+        cmds,
+        deposit_visuals,
+        stage_seven_start,
+        stage_seven_end,
+        peak_scale=1.40,
+    )
+    for node in deposit_visuals:
+        if not cmds.objExists(node + ".translateY"):
+            continue
+        final_y = float(cmds.getAttr(node + ".translateY"))
+        cmds.setKeyframe(
+            node,
+            attribute="translateY",
+            time=stage_seven_start,
+            value=final_y + 0.42,
+        )
+        cmds.setKeyframe(
+            node,
+            attribute="translateY",
+            time=stage_seven_end,
+            value=final_y,
+        )
+    _key_compact_resource_updates(
+        cmds,
+        cells,
+        resource_events,
+        stage_ranges[3],
+        stage_ranges[7],
+        cell_depth,
+    )
+    stage_objects[7].extend(list(deposit_visuals))
+
+    cmds.currentTime(1)
+    return {
+        "stage_objects": stage_objects,
+        "keyed_object_count": sum(len(nodes) for nodes in stage_objects.values()),
+    }
+
+
+def _group_transform_children(cmds, group_name):
+    """Return transform descendants of a generated demo group."""
+    if not cmds.objExists(group_name):
+        return []
+    descendants = cmds.listRelatives(
+        group_name,
+        allDescendents=True,
+        type="transform",
+        fullPath=False,
+    ) or []
+    return list(reversed(descendants))
+
+
+def _key_visibility_hold(cmds, node, stage_start, reveal_frame, stage_end):
+    """Hide at the stage start, reveal once, and hold the final state."""
+    if not node or not cmds.objExists(node):
+        return
+    reveal_frame = max(int(stage_start) + 1, int(reveal_frame))
+    cmds.setKeyframe(node, attribute="visibility", time=stage_start, value=0)
+    cmds.setKeyframe(
+        node,
+        attribute="visibility",
+        time=max(int(stage_start), reveal_frame - 1),
+        value=0,
+    )
+    cmds.setKeyframe(node, attribute="visibility", time=reveal_frame, value=1)
+    cmds.setKeyframe(node, attribute="visibility", time=stage_end, value=1)
+
+
+def _key_translation(cmds, node, frame, position):
+    """Key one transform translation without scrubbing the Maya timeline."""
+    for axis, value in zip("XYZ", position):
+        cmds.setKeyframe(
+            node,
+            attribute="translate{0}".format(axis),
+            time=frame,
+            value=float(value),
+        )
+
+
+def _key_scale_values(cmds, node, frame, value):
+    """Key uniform scale and hold it after the final authored key."""
+    if not node or not cmds.objExists(node):
+        return
+    for axis in "XYZ":
+        attribute = "scale{0}".format(axis)
+        cmds.setKeyframe(node, attribute=attribute, time=frame, value=float(value))
+        try:
+            cmds.setInfinity(node + "." + attribute, postInfinite="constant")
+        except RuntimeError:
+            pass
+
+
+def _key_reveal_sequence(cmds, nodes, stage_start, stage_end):
+    """Reveal prepared objects progressively across one short stage."""
+    valid_nodes = [node for node in nodes if node and cmds.objExists(node)]
+    if not valid_nodes:
+        return
+    reveal_span = max(1, int(stage_end) - int(stage_start) - 4)
+    for index, node in enumerate(valid_nodes):
+        reveal = int(stage_start) + 2 + int(
+            round(index * reveal_span / float(max(1, len(valid_nodes) - 1)))
+        )
+        _key_visibility_hold(cmds, node, stage_start, reveal, stage_end)
+
+
+def _key_pop_sequence(
+    cmds,
+    nodes,
+    stage_start,
+    stage_end,
+    peak_scale=1.25,
+):
+    """Reveal and pulse simple markers while leaving them visible at the end."""
+    valid_nodes = [node for node in nodes if node and cmds.objExists(node)]
+    if not valid_nodes:
+        return
+    reveal_span = max(1, int(stage_end) - int(stage_start) - 8)
+    for index, node in enumerate(valid_nodes):
+        reveal = int(stage_start) + 2 + int(
+            round(index * reveal_span / float(max(1, len(valid_nodes) - 1)))
+        )
+        peak = min(int(stage_end) - 2, reveal + 4)
+        _key_visibility_hold(cmds, node, stage_start, reveal, stage_end)
+        _key_scale_values(cmds, node, stage_start, 0.05)
+        _key_scale_values(cmds, node, reveal, 0.15)
+        _key_scale_values(cmds, node, peak, peak_scale)
+        _key_scale_values(cmds, node, stage_end, 1.0)
+
+
+def _key_bee_demo_holds(
+    cmds,
+    bees,
+    base_transforms,
+    collection_tasks,
+    stage_six_start,
+    stage_six_end,
+    stage_seven_end,
+):
+    """Hold bees still outside the compact Stage 6 collection preview."""
+    task_end_by_bee = {}
+    for task in collection_tasks:
+        bee_id = task.get("bee_id") or task.get("assigned_bee_id")
+        if bee_id:
+            task_end_by_bee[bee_id] = max(
+                task_end_by_bee.get(bee_id, stage_six_start),
+                int(task.get("animation_end_frame", stage_six_start)),
+            )
+
+    for bee in bees:
+        bee_object = bee.get("maya_object")
+        if not bee_object or not cmds.objExists(bee_object):
+            continue
+        base_position = base_transforms.get(bee.get("id"), [0.0, 0.0, 0.0])
+        _key_translation(cmds, bee_object, 1, base_position)
+        _key_translation(cmds, bee_object, int(stage_six_start) - 1, base_position)
+
+        task_end = task_end_by_bee.get(bee.get("id"))
+        if task_end is None:
+            final_position = base_position
+        else:
+            cmds.currentTime(task_end)
+            final_position = cmds.xform(
+                bee_object,
+                query=True,
+                translation=True,
+                worldSpace=True,
+            )
+        _key_translation(cmds, bee_object, stage_six_end, final_position)
+        _key_translation(cmds, bee_object, stage_seven_end, final_position)
+
+
+def _key_compact_resource_updates(
+    cmds,
+    cells,
+    resource_events,
+    stage_three_range,
+    stage_seven_range,
+    cell_depth,
+):
+    """Show direct deposits in Stage 3 and transported deposits in Stage 7."""
+    first_event_by_cell_resource = {}
+    for event in resource_events:
+        key = (event.get("target_cell"), event.get("resource_type"))
+        first_event_by_cell_resource.setdefault(key, event)
+
+    stage_three_start, stage_three_end = stage_three_range
+    stage_seven_start, stage_seven_end = stage_seven_range
+    max_fill_height = max(0.12, float(cell_depth) * 0.72)
+    pollen_count = 8
+
+    for cell in cells:
+        capacity = max(0.000001, float(cell.get("capacity", 1.0)))
+        cell_id = cell["id"]
+        initial_type = cell.get("initial_type", cell.get("type"))
+        for resource_type in ("nectar", "pollen"):
+            initial_amount = float(cell.get("initial_{0}".format(resource_type), 0.0))
+            final_amount = float(cell.get(resource_type, 0.0))
+            first_event = first_event_by_cell_resource.get((cell_id, resource_type))
+            pre_transport_amount = (
+                float(first_event.get("before_amount", initial_amount))
+                if first_event
+                else final_amount
+            )
+
+            if resource_type == "nectar" and initial_type == "honey":
+                fill = "{0}_nectar_level".format(cell_id)
+                if not cmds.objExists(fill):
+                    continue
+                _key_resource_level(
+                    cmds,
+                    fill,
+                    stage_three_start,
+                    initial_amount / capacity,
+                    cell_depth,
+                    max_fill_height,
+                )
+                _key_resource_level(
+                    cmds,
+                    fill,
+                    stage_three_end,
+                    pre_transport_amount / capacity,
+                    cell_depth,
+                    max_fill_height,
+                )
+                _key_resource_level(
+                    cmds,
+                    fill,
+                    stage_seven_start,
+                    pre_transport_amount / capacity,
+                    cell_depth,
+                    max_fill_height,
+                )
+                _key_resource_level(
+                    cmds,
+                    fill,
+                    stage_seven_end,
+                    final_amount / capacity,
+                    cell_depth,
+                    max_fill_height,
+                )
+
+            if resource_type == "pollen" and initial_type == "pollen":
+                for grain_index in range(pollen_count):
+                    grain = "{0}_pollen_{1:02d}".format(cell_id, grain_index)
+                    if not cmds.objExists(grain):
+                        continue
+                    threshold = float(grain_index + 1) / pollen_count
+                    values = (
+                        (stage_three_start, initial_amount),
+                        (stage_three_end, pre_transport_amount),
+                        (stage_seven_start, pre_transport_amount),
+                        (stage_seven_end, final_amount),
+                    )
+                    for frame, amount in values:
+                        cmds.setKeyframe(
+                            grain,
+                            attribute="visibility",
+                            time=frame,
+                            value=1 if amount / capacity >= threshold else 0,
+                        )
+
+        cap = "{0}_cap_lid".format(cell_id)
+        if cmds.objExists(cap):
+            initially_capped = initial_type == "capped"
+            finally_capped = cell.get("type") == "capped"
+            cmds.setKeyframe(
+                cap,
+                attribute="visibility",
+                time=stage_seven_start,
+                value=1 if initially_capped else 0,
+            )
+            cmds.setKeyframe(
+                cap,
+                attribute="visibility",
+                time=stage_seven_end,
+                value=1 if finally_capped else 0,
+            )
+
+
 def organize_demo_cycle_groups(cycle_number):
     """Nest all prepared stage layers under one cycle-specific Maya group."""
     import maya.cmds as cmds
@@ -928,13 +1442,13 @@ def organize_demo_cycle_groups(cycle_number):
 
 
 def apply_demo_stage(scene_data, stage):
-    """Show one prepared static stage and select its playback segment."""
+    """Show one prepared stage and select its short transition segment."""
     import maya.cmds as cmds
 
     safe_stage = max(0, min(7, int(stage)))
     visible_by_stage = {
         0: set(),
-        1: {"falling_drops"},
+        1: {"natural_drops"},
         2: {"natural_drops", "mapping", "validation"},
         3: {"direct_storage", "task_markers", "blocked_tasks"},
         4: {"task_markers", "bee_selections", "bfs_paths", "blocked_tasks"},
@@ -955,7 +1469,12 @@ def apply_demo_stage(scene_data, stage):
     )
     range_start = max(1, int(playback_range[0]))
     range_end = max(range_start + 1, int(playback_range[1]))
-    cmds.playbackOptions(minTime=range_start, maxTime=range_end)
+    cmds.playbackOptions(
+        minTime=range_start,
+        maxTime=range_end,
+        loop="once",
+        view="active",
+    )
     cmds.currentTime(max(range_start, min(frame, range_end)))
     cmds.refresh(force=True)
     scene_data["demo_stage"] = safe_stage
