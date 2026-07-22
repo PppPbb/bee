@@ -15,6 +15,130 @@ AXIAL_DIRECTIONS = (
 )
 
 
+VOXEL_FACE_DIRECTIONS = (
+    (1, 0, 0),
+    (-1, 0, 0),
+    (0, 1, 0),
+    (0, -1, 0),
+    (0, 0, 1),
+    (0, 0, -1),
+)
+
+
+# Warm sRGB-style colors are intentionally split into several material bands.
+# The geometry does not use image textures; all color changes come from voxel
+# classification and material assignment.
+VOXEL_MATERIAL_SPECS = {
+    "wax_shadow": {
+        "name": "chm_voxel_wax_shadow_MAT",
+        "color": (0.48, 0.27, 0.075),
+        "roughness": 0.62,
+        "specular": 0.20,
+    },
+    "wax_side": {
+        "name": "chm_voxel_wax_side_MAT",
+        "color": (0.72, 0.43, 0.10),
+        "roughness": 0.58,
+        "specular": 0.24,
+    },
+    "wax_floor": {
+        "name": "chm_voxel_wax_floor_MAT",
+        "color": (0.92, 0.61, 0.16),
+        "roughness": 0.55,
+        "specular": 0.26,
+    },
+    "wax_mid": {
+        "name": "chm_voxel_wax_mid_MAT",
+        "color": (1.0, 0.72, 0.27),
+        "roughness": 0.50,
+        "specular": 0.28,
+    },
+    "wax_light": {
+        "name": "chm_voxel_wax_light_MAT",
+        "color": (1.0, 0.84, 0.48),
+        "roughness": 0.46,
+        "specular": 0.30,
+    },
+    "wax_highlight": {
+        "name": "chm_voxel_wax_highlight_MAT",
+        "color": (1.0, 0.94, 0.72),
+        "roughness": 0.40,
+        "specular": 0.34,
+    },
+    "honey_deep": {
+        "name": "chm_voxel_honey_deep_MAT",
+        "color": (0.58, 0.31, 0.055),
+        "roughness": 0.24,
+        "specular": 0.62,
+        "transmission": 0.03,
+    },
+    "honey": {
+        "name": "chm_voxel_honey_MAT",
+        "color": (1.0, 0.60, 0.055),
+        "roughness": 0.18,
+        "specular": 0.72,
+        "transmission": 0.06,
+    },
+    "nectar_glow": {
+        "name": "chm_voxel_nectar_glow_MAT",
+        "color": (1.0, 0.57, 0.035),
+        "roughness": 0.14,
+        "specular": 0.78,
+        "transmission": 0.08,
+        "emission": 0.34,
+        "emission_color": (1.0, 0.39, 0.025),
+    },
+    "honey_glint": {
+        "name": "chm_voxel_honey_glint_MAT",
+        "color": (1.0, 0.96, 0.72),
+        "roughness": 0.12,
+        "specular": 0.82,
+    },
+    "pollen_orange": {
+        "name": "chm_voxel_pollen_orange_MAT",
+        "color": (1.0, 0.48, 0.035),
+        "roughness": 0.78,
+        "specular": 0.14,
+    },
+    "pollen_gold": {
+        "name": "chm_voxel_pollen_gold_MAT",
+        "color": (1.0, 0.68, 0.055),
+        "roughness": 0.76,
+        "specular": 0.15,
+    },
+    "pollen_yellow": {
+        "name": "chm_voxel_pollen_yellow_MAT",
+        "color": (1.0, 0.88, 0.16),
+        "roughness": 0.74,
+        "specular": 0.16,
+    },
+    "cap_shadow": {
+        "name": "chm_voxel_cap_shadow_MAT",
+        "color": (0.78, 0.55, 0.22),
+        "roughness": 0.70,
+        "specular": 0.18,
+    },
+    "cap": {
+        "name": "chm_voxel_cap_cream_MAT",
+        "color": (1.0, 0.86, 0.58),
+        "roughness": 0.66,
+        "specular": 0.20,
+    },
+    "queen": {
+        "name": "chm_voxel_queen_amber_MAT",
+        "color": (0.64, 0.39, 0.10),
+        "roughness": 0.50,
+        "specular": 0.30,
+    },
+}
+
+
+VOXEL_MATERIAL_PRIORITY = {
+    material_key: priority
+    for priority, material_key in enumerate(VOXEL_MATERIAL_SPECS, start=1)
+}
+
+
 def axial_to_world(q, r, cell_size):
     """Convert axial hex coordinates to a flat Maya/world position.
 
@@ -404,7 +528,7 @@ def _create_maya_material(cmds, material_name, color):
 
 
 def _assign_maya_material(cmds, node, material):
-    """Assign a Maya material to an object.
+    """Assign a Maya material through an explicit shading-engine connection.
 
     Parameters:
         cmds: Imported maya.cmds module.
@@ -414,9 +538,36 @@ def _assign_maya_material(cmds, node, material):
     Returns:
         None.
     """
-    cmds.select(node, replace=True)
-    cmds.hyperShade(assign=material)
-    cmds.select(clear=True)
+    shading_groups = cmds.listConnections(
+        material,
+        source=False,
+        destination=True,
+        type="shadingEngine",
+    ) or []
+    if shading_groups:
+        shading_group = shading_groups[0]
+    else:
+        shading_group_name = material + "_SG"
+        if cmds.objExists(shading_group_name):
+            shading_group = shading_group_name
+        else:
+            shading_group = cmds.sets(
+                renderable=True,
+                noSurfaceShader=True,
+                empty=True,
+                name=shading_group_name,
+            )
+
+    surface_plug = shading_group + ".surfaceShader"
+    connected_shader = cmds.listConnections(
+        surface_plug,
+        source=True,
+        destination=False,
+    ) or []
+    if material not in connected_shader:
+        cmds.connectAttr(material + ".outColor", surface_plug, force=True)
+
+    cmds.sets(node, edit=True, forceElement=shading_group)
 
 
 def queen_footprint_outline(cell_size):
@@ -503,280 +654,633 @@ def _create_outline_prism(cmds, name, outline, height, base_y=0.0):
     return transform
 
 
-def create_honeycomb_geometry(cells, cell_size, cell_depth):
-    """Create Maya hexagonal prism geometry for the honeycomb cells.
-
-    This is a Maya-only function. It imports maya.cmds inside the function body
-    so the module can still be imported and tested outside Autodesk Maya.
-
-    Parameters:
-        cells (list[dict]): Honeycomb cell dictionaries.
-        cell_size (float): Radius of each hexagonal prism.
-        cell_depth (float): Height/depth of each hexagonal prism.
-
-    Returns:
-        list[dict]: The same cells list with each cell's maya_object updated.
-    """
-    import maya.cmds as cmds
-
+def get_voxel_dimensions(cell_size, cell_depth, voxel_density=14):
+    """Return a stable cubic voxel pitch and quantized hive layer counts."""
     if cell_size <= 0:
         raise ValueError("cell_size must be greater than 0")
     if cell_depth <= 0:
         raise ValueError("cell_depth must be greater than 0")
 
+    density = max(8, min(24, int(round(voxel_density))))
+    pitch = float(cell_size) / float(density)
+    base_layers = max(3, int(round(float(cell_depth) / pitch)))
+    wall_height = max(0.42, float(cell_depth) * 1.25)
+    wall_layers = max(5, int(round(wall_height / pitch)))
+    wall_thickness = max(pitch * 2.0, float(cell_size) * 0.14)
+    return {
+        "density": density,
+        "pitch": pitch,
+        "base_layers": base_layers,
+        "wall_layers": wall_layers,
+        "wall_thickness": wall_thickness,
+    }
+
+
+def _hex_margin(local_x, local_z, radius):
+    """Return inward distance from a point to a pointy-top hex boundary."""
+    apothem = float(radius) * math.cos(math.radians(30.0))
+    maximum_projection = max(
+        local_x * math.cos(math.radians(angle))
+        + local_z * math.sin(math.radians(angle))
+        for angle in range(0, 360, 60)
+    )
+    return apothem - maximum_projection
+
+
+def _point_in_polygon_with_margin(x, z, outline):
+    """Return polygon containment and distance to the closest outline edge."""
+    inside = False
+    closest_distance = None
+    point_count = len(outline)
+    for index in range(point_count):
+        start_x, start_z = outline[index]
+        end_x, end_z = outline[(index + 1) % point_count]
+
+        crosses_ray = (start_z > z) != (end_z > z)
+        if crosses_ray:
+            denominator = end_z - start_z
+            intersection_x = start_x + (z - start_z) * (end_x - start_x) / denominator
+            if x < intersection_x:
+                inside = not inside
+
+        delta_x = end_x - start_x
+        delta_z = end_z - start_z
+        length_squared = delta_x * delta_x + delta_z * delta_z
+        if length_squared <= 0.0000001:
+            distance = math.sqrt((x - start_x) ** 2 + (z - start_z) ** 2)
+        else:
+            factor = max(
+                0.0,
+                min(
+                    1.0,
+                    ((x - start_x) * delta_x + (z - start_z) * delta_z)
+                    / length_squared,
+                ),
+            )
+            nearest_x = start_x + delta_x * factor
+            nearest_z = start_z + delta_z * factor
+            distance = math.sqrt((x - nearest_x) ** 2 + (z - nearest_z) ** 2)
+        closest_distance = distance if closest_distance is None else min(closest_distance, distance)
+
+    return inside, (closest_distance or 0.0)
+
+
+def _write_voxel(voxels, key, material_key):
+    """Write one voxel while resolving overlaps by visible-material priority."""
+    current_material = voxels.get(key)
+    if current_material is None or (
+        VOXEL_MATERIAL_PRIORITY[material_key]
+        >= VOXEL_MATERIAL_PRIORITY[current_material]
+    ):
+        voxels[key] = material_key
+
+
+def _cell_seed(cell, seed):
+    """Create a deterministic integer seed without Python's randomized hash."""
+    return (
+        int(seed)
+        + (int(cell.get("q", 0)) + 97) * 73856093
+        + (int(cell.get("r", 0)) + 193) * 19349663
+    )
+
+
+def _pollen_instance_records(cell, pitch, base_layers, cell_size, seed):
+    """Create a dense but deterministic pile of instanced pollen pixels."""
+    rng = random.Random(_cell_seed(cell, seed))
+    center_x, _center_y, center_z = cell["position"]
+    records = []
+    used_keys = set()
+    attempts = 0
+    target_count = 24
+
+    while len(records) < target_count and attempts < target_count * 8:
+        attempts += 1
+        angle = rng.uniform(0.0, math.tau)
+        radius = math.sqrt(rng.random()) * float(cell_size) * 0.56
+        ix = int(round((center_x + math.cos(angle) * radius) / pitch))
+        iz = int(round((center_z + math.sin(angle) * radius) / pitch))
+        stack = 0 if len(records) < 18 else 1
+        key = (ix, iz, stack)
+        if key in used_keys:
+            continue
+        used_keys.add(key)
+        material_key = (
+            "pollen_orange",
+            "pollen_gold",
+            "pollen_yellow",
+        )[len(records) % 3]
+        records.append({
+            "position": (
+                ix * pitch,
+                (base_layers + 0.55 + stack * 0.78) * pitch,
+                iz * pitch,
+            ),
+            "scale": (
+                rng.uniform(0.72, 0.92),
+                rng.uniform(0.62, 1.05),
+                rng.uniform(0.72, 0.92),
+            ),
+            "material": material_key,
+            "cell_id": cell["id"],
+        })
+    return records
+
+
+def _honey_glint_instance_records(cell, pitch, base_layers, cell_size):
+    """Return a small pixel-art reflection pattern for one honey pool."""
+    center_x, _center_y, center_z = cell["position"]
+    offsets = (
+        (-0.34, 0.25),
+        (-0.22, 0.25),
+        (-0.34, 0.13),
+        (0.27, -0.27),
+    )
+    records = []
+    for offset_x, offset_z in offsets:
+        ix = int(round((center_x + offset_x * cell_size) / pitch))
+        iz = int(round((center_z + offset_z * cell_size) / pitch))
+        if _hex_margin(ix * pitch - center_x, iz * pitch - center_z, cell_size) <= pitch * 2.4:
+            continue
+        records.append({
+            "position": (
+                ix * pitch,
+                (base_layers + 1.32) * pitch,
+                iz * pitch,
+            ),
+            "scale": (0.96, 0.28, 0.96),
+            "material": "honey_glint",
+            "cell_id": cell["id"],
+        })
+    return records
+
+
+def build_honeycomb_voxel_data(
+    cells,
+    cell_size,
+    cell_depth,
+    voxel_density=14,
+    seed=42,
+):
+    """Build texture-free voxel occupancy and lightweight instance records.
+
+    The returned structure contains only Python values and can be tested
+    without Maya.  Every voxel uses a shared global integer lattice so adjacent
+    cells deduplicate cleanly and cannot create sub-pixel cracks.
+    """
+    dimensions = get_voxel_dimensions(cell_size, cell_depth, voxel_density)
+    visible_count = max(1, visible_cell_count(cells))
+    adaptive_limit = max(
+        8,
+        min(24, int(round(14.0 * (96.0 / visible_count) ** (1.0 / 3.0)))),
+    )
+    if dimensions["density"] > adaptive_limit:
+        dimensions = get_voxel_dimensions(
+            cell_size,
+            cell_depth,
+            adaptive_limit,
+        )
+    pitch = dimensions["pitch"]
+    base_layers = dimensions["base_layers"]
+    wall_layers = dimensions["wall_layers"]
+    wall_thickness = dimensions["wall_thickness"]
+    voxels = {}
+    instances = {material_key: [] for material_key in (
+        "pollen_orange",
+        "pollen_gold",
+        "pollen_yellow",
+        "honey_glint",
+    )}
+
+    for cell in cells:
+        # Scene generation runs after the simulation has calculated its final
+        # state.  Build the frame-one look from initial_type so newly filled
+        # cells can visibly cap at their delivery frame instead of starting
+        # already closed.
+        cell_type = cell.get("initial_type", cell.get("type", "empty"))
+        if cell_type == "queen_reserved":
+            continue
+
+        center_x, _center_y, center_z = cell["position"]
+        is_queen = cell_type == "queen"
+        outline = queen_footprint_outline(cell_size) if is_queen else None
+        if outline:
+            minimum_x = min(point[0] for point in outline)
+            maximum_x = max(point[0] for point in outline)
+            minimum_z = min(point[1] for point in outline)
+            maximum_z = max(point[1] for point in outline)
+        else:
+            minimum_x = center_x - cell_size
+            maximum_x = center_x + cell_size
+            minimum_z = center_z - cell_size
+            maximum_z = center_z + cell_size
+
+        ix_min = int(math.floor(minimum_x / pitch)) - 1
+        ix_max = int(math.ceil(maximum_x / pitch)) + 1
+        iz_min = int(math.floor(minimum_z / pitch)) - 1
+        iz_max = int(math.ceil(maximum_z / pitch)) + 1
+
+        for ix in range(ix_min, ix_max + 1):
+            x = ix * pitch
+            for iz in range(iz_min, iz_max + 1):
+                z = iz * pitch
+                if is_queen:
+                    inside, boundary_margin = _point_in_polygon_with_margin(x, z, outline)
+                else:
+                    boundary_margin = _hex_margin(x - center_x, z - center_z, cell_size)
+                    inside = boundary_margin >= -pitch * 0.06
+                if not inside:
+                    continue
+
+                is_wall = boundary_margin <= wall_thickness
+                for layer in range(base_layers):
+                    if layer == 0 or boundary_margin <= pitch * 1.2:
+                        material_key = "wax_shadow"
+                    elif layer == base_layers - 1:
+                        if not is_wall and cell_type in ("empty", "pollen"):
+                            material_key = "wax_shadow"
+                        else:
+                            material_key = "wax_floor"
+                    else:
+                        material_key = "wax_side"
+                    _write_voxel(voxels, (ix, layer, iz), material_key)
+
+                if is_wall:
+                    variation_hash = abs(ix * 92821 + iz * 68917 + _cell_seed(cell, seed))
+                    column_layers = wall_layers - (1 if variation_hash % 29 == 0 else 0)
+                    for upper_index in range(column_layers):
+                        layer = base_layers + upper_index
+                        if upper_index == column_layers - 1:
+                            material_key = "wax_highlight"
+                        elif upper_index >= column_layers - 3:
+                            material_key = "wax_light"
+                        elif upper_index <= 1:
+                            material_key = "wax_shadow"
+                        else:
+                            material_key = "wax_mid"
+                        _write_voxel(voxels, (ix, layer, iz), material_key)
+
+                if is_queen and not is_wall:
+                    _write_voxel(voxels, (ix, base_layers, iz), "queen")
+                elif cell_type == "honey" and not is_wall:
+                    edge_band = boundary_margin <= wall_thickness + pitch * 2.2
+                    honey_material = "honey_deep" if edge_band else "honey"
+                    _write_voxel(voxels, (ix, base_layers, iz), honey_material)
+                elif cell_type == "capped" and not is_wall:
+                    cap_hash = abs(ix * 31337 + iz * 6971 + _cell_seed(cell, seed))
+                    cap_layer = base_layers + wall_layers - 2
+                    if cap_hash % 17 == 0:
+                        cap_layer += 1
+                    cap_material = "cap_shadow" if cap_hash % 7 == 0 else "cap"
+                    _write_voxel(voxels, (ix, cap_layer, iz), cap_material)
+
+        if cell_type == "pollen":
+            for record in _pollen_instance_records(
+                cell, pitch, base_layers, cell_size, seed
+            ):
+                instances[record["material"]].append(record)
+        elif cell_type == "honey":
+            instances["honey_glint"].extend(
+                _honey_glint_instance_records(cell, pitch, base_layers, cell_size)
+            )
+
+    return {
+        "pitch": pitch,
+        "requested_density": max(8, min(24, int(round(voxel_density)))),
+        "density": dimensions["density"],
+        "base_layers": base_layers,
+        "wall_layers": wall_layers,
+        "wall_thickness": wall_thickness,
+        "voxels": voxels,
+        "instances": instances,
+    }
+
+
+def hex_voxel_layer_keys(
+    center_x,
+    center_z,
+    radius,
+    pitch,
+    y_layer,
+    inset=0.0,
+):
+    """Return global voxel keys for one inset hexagonal layer."""
+    keys = set()
+    ix_min = int(math.floor((center_x - radius) / pitch)) - 1
+    ix_max = int(math.ceil((center_x + radius) / pitch)) + 1
+    iz_min = int(math.floor((center_z - radius) / pitch)) - 1
+    iz_max = int(math.ceil((center_z + radius) / pitch)) + 1
+    for ix in range(ix_min, ix_max + 1):
+        for iz in range(iz_min, iz_max + 1):
+            margin = _hex_margin(
+                ix * pitch - center_x,
+                iz * pitch - center_z,
+                radius,
+            )
+            if margin >= float(inset):
+                keys.add((ix, int(y_layer), iz))
+    return keys
+
+
+def voxel_mesh_data(voxel_keys, pitch, occupied_keys=None):
+    """Build vertices and exposed quad faces for a set of cubic voxels."""
+    keys = set(voxel_keys)
+    occupied = keys if occupied_keys is None else set(occupied_keys)
+    half = float(pitch) * 0.5
+    vertices = []
+    face_counts = []
+    face_connects = []
+
+    face_offsets = (
+        ((1, 0, 0), ((half, -half, -half), (half, half, -half), (half, half, half), (half, -half, half))),
+        ((-1, 0, 0), ((-half, -half, half), (-half, half, half), (-half, half, -half), (-half, -half, -half))),
+        ((0, 1, 0), ((-half, half, -half), (-half, half, half), (half, half, half), (half, half, -half))),
+        ((0, -1, 0), ((-half, -half, half), (-half, -half, -half), (half, -half, -half), (half, -half, half))),
+        ((0, 0, 1), ((half, -half, half), (half, half, half), (-half, half, half), (-half, -half, half))),
+        ((0, 0, -1), ((-half, -half, -half), (-half, half, -half), (half, half, -half), (half, -half, -half))),
+    )
+
+    for ix, iy, iz in sorted(keys):
+        center_x = ix * pitch
+        center_y = (iy + 0.5) * pitch
+        center_z = iz * pitch
+        for direction, offsets in face_offsets:
+            neighbor = (ix + direction[0], iy + direction[1], iz + direction[2])
+            if neighbor in occupied:
+                continue
+            first_index = len(vertices)
+            vertices.extend(
+                (
+                    center_x + offset_x,
+                    center_y + offset_y,
+                    center_z + offset_z,
+                )
+                for offset_x, offset_y, offset_z in offsets
+            )
+            face_counts.append(4)
+            face_connects.extend(range(first_index, first_index + 4))
+
+    return vertices, face_counts, face_connects
+
+
+def create_voxel_material(cmds, material_key):
+    """Create or reuse a physically distinct texture-free voxel material."""
+    spec = VOXEL_MATERIAL_SPECS[material_key]
+    material_name = spec["name"]
+    if cmds.objExists(material_name):
+        node_type = cmds.nodeType(material_name)
+        if node_type == "standardSurface":
+            cmds.setAttr(material_name + ".baseColor", *spec["color"], type="double3")
+            cmds.setAttr(material_name + ".base", 1.0)
+            cmds.setAttr(material_name + ".specular", spec.get("specular", 0.25))
+            cmds.setAttr(
+                material_name + ".specularRoughness",
+                spec.get("roughness", 0.5),
+            )
+            if cmds.attributeQuery("transmission", node=material_name, exists=True):
+                cmds.setAttr(
+                    material_name + ".transmission",
+                    spec.get("transmission", 0.0),
+                )
+            if cmds.attributeQuery("emission", node=material_name, exists=True):
+                cmds.setAttr(material_name + ".emission", spec.get("emission", 0.0))
+            if cmds.attributeQuery("emissionColor", node=material_name, exists=True):
+                cmds.setAttr(
+                    material_name + ".emissionColor",
+                    *spec.get("emission_color", spec["color"]),
+                    type="double3",
+                )
+        elif node_type == "lambert":
+            cmds.setAttr(material_name + ".color", *spec["color"], type="double3")
+            if cmds.attributeQuery("incandescence", node=material_name, exists=True):
+                emission = max(0.0, float(spec.get("emission", 0.0)))
+                emission_color = spec.get("emission_color", spec["color"])
+                cmds.setAttr(
+                    material_name + ".incandescence",
+                    *(component * emission for component in emission_color),
+                    type="double3",
+                )
+        return material_name
+
+    material = None
+    try:
+        material = cmds.shadingNode("standardSurface", asShader=True, name=material_name)
+        cmds.setAttr(material + ".baseColor", *spec["color"], type="double3")
+        cmds.setAttr(material + ".base", 1.0)
+        cmds.setAttr(material + ".specular", spec.get("specular", 0.25))
+        cmds.setAttr(material + ".specularRoughness", spec.get("roughness", 0.5))
+        if cmds.attributeQuery("transmission", node=material, exists=True):
+            cmds.setAttr(material + ".transmission", spec.get("transmission", 0.0))
+        if cmds.attributeQuery("emission", node=material, exists=True):
+            cmds.setAttr(material + ".emission", spec.get("emission", 0.0))
+        if cmds.attributeQuery("emissionColor", node=material, exists=True):
+            cmds.setAttr(
+                material + ".emissionColor",
+                *spec.get("emission_color", spec["color"]),
+                type="double3",
+            )
+        return material
+    except (RuntimeError, ValueError):
+        if material and cmds.objExists(material):
+            cmds.delete(material)
+        material = cmds.shadingNode("lambert", asShader=True, name=material_name)
+        cmds.setAttr(material + ".color", *spec["color"], type="double3")
+        if cmds.attributeQuery("incandescence", node=material, exists=True):
+            emission = max(0.0, float(spec.get("emission", 0.0)))
+            emission_color = spec.get("emission_color", spec["color"])
+            cmds.setAttr(
+                material + ".incandescence",
+                *(component * emission for component in emission_color),
+                type="double3",
+            )
+        return material
+
+
+def create_merged_voxel_mesh(
+    voxel_keys,
+    pitch,
+    name,
+    material,
+    parent=None,
+    occupied_keys=None,
+):
+    """Create one Maya mesh containing only the exposed faces of many voxels."""
+    import maya.api.OpenMaya as om
+    import maya.cmds as cmds
+
+    vertices, face_counts, face_connects = voxel_mesh_data(
+        voxel_keys,
+        pitch,
+        occupied_keys=occupied_keys,
+    )
+    if not face_counts:
+        return None
+
+    points = om.MPointArray()
+    for vertex in vertices:
+        points.append(om.MPoint(vertex[0], vertex[1], vertex[2]))
+    mesh_object = om.MFnMesh().create(
+        points,
+        face_counts,
+        face_connects,
+    )
+    # Maya versions differ here: MFnMesh.create() may return the mesh shape or
+    # the automatically created transform.  Taking parent(0) unconditionally
+    # can therefore resolve to the world node ("|"), which cannot be renamed.
+    if mesh_object.hasFn(om.MFn.kTransform):
+        transform_object = mesh_object
+    else:
+        transform_object = om.MFnDagNode(mesh_object).parent(0)
+    transform = om.MFnDagNode(transform_object).fullPathName()
+    transform = cmds.rename(transform, name)
+    shape_name = cmds.listRelatives(transform, shapes=True, fullPath=False)[0]
+    cmds.rename(shape_name, name + "Shape")
+    if parent:
+        cmds.parent(transform, parent)
+    _assign_maya_material(cmds, transform, material)
+    return transform
+
+
+def ensure_voxel_cube_prototype(cmds, name, pitch, material, parent):
+    """Create one hidden cube whose shape can be shared by many instances."""
+    if cmds.objExists(name):
+        return name
+    cube_result = cmds.polyCube(
+        width=float(pitch),
+        height=float(pitch),
+        depth=float(pitch),
+        name=name,
+        constructionHistory=False,
+    )
+    prototype = cube_result[0] if isinstance(cube_result, (list, tuple)) else cube_result
+    cmds.parent(prototype, parent)
+    _assign_maya_material(cmds, prototype, material)
+    cmds.setAttr(prototype + ".visibility", 0)
+    return prototype
+
+
+def create_voxel_cube_instances(cmds, prototype, records, name_prefix, parent):
+    """Create transform instances that all share one prototype cube shape."""
+    created = []
+    for index, record in enumerate(records):
+        instance = cmds.instance(
+            prototype,
+            name="{0}_{1:04d}".format(name_prefix, index),
+        )[0]
+        cmds.parent(instance, parent)
+        cmds.setAttr(instance + ".visibility", 1)
+        cmds.xform(
+            instance,
+            translation=record["position"],
+            scale=record.get("scale", (1.0, 1.0, 1.0)),
+            worldSpace=True,
+        )
+        created.append(instance)
+    return created
+
+
+def create_honeycomb_geometry(
+    cells,
+    cell_size,
+    cell_depth,
+    voxel_density=14,
+    seed=42,
+):
+    """Create a texture-free honeycomb from merged voxel meshes and instances."""
+    import maya.cmds as cmds
+
+    voxel_data = build_honeycomb_voxel_data(
+        cells,
+        cell_size,
+        cell_depth,
+        voxel_density=voxel_density,
+        seed=seed,
+    )
+    if voxel_data["density"] < voxel_data["requested_density"]:
+        print(
+            "Cloud-Hive voxel density reduced from {0} to {1} for this hive size.".format(
+                voxel_data["requested_density"],
+                voxel_data["density"],
+            )
+        )
     group_name = "CloudHive_Honeycomb_GRP"
-    if not cmds.objExists(group_name):
-        cmds.group(empty=True, name=group_name)
+    if cmds.objExists(group_name):
+        cmds.delete(group_name)
+    cmds.group(empty=True, name=group_name)
+    cmds.addAttr(group_name, longName="voxelPitch", attributeType="double")
+    cmds.setAttr(group_name + ".voxelPitch", voxel_data["pitch"])
+    cmds.addAttr(group_name, longName="voxelDensity", attributeType="long")
+    cmds.setAttr(group_name + ".voxelDensity", voxel_data["density"])
 
-    wax_floor_material = _create_maya_material(
-        cmds, "chm_pixel_wax_floor_MAT", (0.96, 0.68, 0.28)
-    )
-    wax_wall_material = _create_maya_material(
-        cmds, "chm_pixel_wax_wall_MAT", (1.0, 0.84, 0.48)
-    )
-    honey_material = _create_maya_material(
-        cmds, "chm_pixel_honey_inside_MAT", (1.0, 0.36, 0.015)
-    )
-    honey_highlight_material = _create_maya_material(
-        cmds, "chm_pixel_honey_highlight_MAT", (1.0, 0.78, 0.16)
-    )
-    pollen_materials = [
-        _create_maya_material(cmds, "chm_pixel_pollen_orange_MAT", (1.0, 0.25, 0.01)),
-        _create_maya_material(cmds, "chm_pixel_pollen_gold_MAT", (1.0, 0.63, 0.02)),
-        _create_maya_material(cmds, "chm_pixel_pollen_yellow_MAT", (1.0, 0.88, 0.08)),
-    ]
-    cap_material = _create_maya_material(
-        cmds, "chm_pixel_cap_cream_MAT", (1.0, 0.91, 0.66)
-    )
-    queen_material = _create_maya_material(
-        cmds, "chm_pixel_queen_violet_MAT", (0.64, 0.24, 0.72)
-    )
+    mesh_group = cmds.group(empty=True, name="CloudHive_VoxelMeshes_GRP")
+    instance_group = cmds.group(empty=True, name="CloudHive_VoxelInstances_GRP")
+    prototype_group = cmds.group(empty=True, name="CloudHive_VoxelPrototypes_GRP")
+    cmds.parent(mesh_group, instance_group, prototype_group, group_name)
+    cmds.setAttr(prototype_group + ".visibility", 0)
 
-    pollen_offsets = [
-        (-0.42, -0.18), (-0.20, -0.34), (0.03, -0.38), (0.29, -0.27),
-        (0.43, -0.04), (-0.34, 0.06), (-0.10, -0.02), (0.16, 0.01),
-        (0.37, 0.17), (-0.26, 0.29), (0.01, 0.32), (0.25, 0.34),
-    ]
+    occupied_keys = set(voxel_data["voxels"])
+    mesh_objects = []
+    for material_key in VOXEL_MATERIAL_SPECS:
+        keys = [
+            key
+            for key, voxel_material in voxel_data["voxels"].items()
+            if voxel_material == material_key
+        ]
+        if not keys:
+            continue
+        material = create_voxel_material(cmds, material_key)
+        mesh = create_merged_voxel_mesh(
+            keys,
+            voxel_data["pitch"],
+            "CloudHive_voxels_{0}".format(material_key),
+            material,
+            parent=mesh_group,
+            occupied_keys=occupied_keys,
+        )
+        if mesh:
+            mesh_objects.append(mesh)
 
+    instance_objects = []
+    for material_key, records in voxel_data["instances"].items():
+        if not records:
+            continue
+        material = create_voxel_material(cmds, material_key)
+        prototype = ensure_voxel_cube_prototype(
+            cmds,
+            "CloudHive_{0}_voxel_PROTOTYPE".format(material_key),
+            voxel_data["pitch"],
+            material,
+            prototype_group,
+        )
+        created = create_voxel_cube_instances(
+            cmds,
+            prototype,
+            records,
+            "CloudHive_{0}_instance".format(material_key),
+            instance_group,
+        )
+        instance_objects.extend(created)
+
+        if material_key == "honey_glint":
+            for index, instance in enumerate(created):
+                phase = 1 + (index % 5) * 3
+                cmds.setKeyframe(instance, attribute="scaleX", time=phase, value=0.72)
+                cmds.setKeyframe(instance, attribute="scaleZ", time=phase, value=0.72)
+                cmds.setKeyframe(instance, attribute="scaleX", time=phase + 8, value=1.12)
+                cmds.setKeyframe(instance, attribute="scaleZ", time=phase + 8, value=1.12)
+                cmds.setKeyframe(instance, attribute="scaleX", time=phase + 16, value=0.72)
+                cmds.setKeyframe(instance, attribute="scaleZ", time=phase + 16, value=0.72)
+                cmds.setInfinity(instance, attribute="scaleX", preInfinite="cycle", postInfinite="cycle")
+                cmds.setInfinity(instance, attribute="scaleZ", preInfinite="cycle", postInfinite="cycle")
+
+    content_objects = mesh_objects + instance_objects
     for cell in cells:
         if cell.get("type") == "queen_reserved":
             cell["maya_object"] = None
-            continue
-
-        x, _, z = cell["position"]
-        object_name = "{0}_CELL_GRP".format(cell["id"])
-        is_queen = cell.get("type") == "queen"
-        cell_group = cmds.group(empty=True, name=object_name)
-        cmds.parent(cell_group, group_name)
-
-        if is_queen:
-            # A scaled regular hex cannot fill the union of seven hex cells.
-            # Build the real 18-edge footprint so every outer segment shares
-            # the same boundary as a neighbouring cell in the second ring.
-            outline = queen_footprint_outline(cell_size)
-            base_height = max(0.12, cell_depth * 0.36)
-            wall_height = max(0.58, cell_depth * 2.15)
-            wall_thickness = max(cell_size * 0.13, 0.10)
-            seam_overlap = max(0.015, cell_depth * 0.04)
-
-            base = _create_outline_prism(
-                cmds,
-                "{0}_floor".format(cell["id"]),
-                outline,
-                base_height,
-            )
-            cmds.parent(base, cell_group)
-            _assign_maya_material(cmds, base, wax_floor_material)
-
-            for wall_index in range(len(outline)):
-                start_x, start_z = outline[wall_index]
-                end_x, end_z = outline[(wall_index + 1) % len(outline)]
-                delta_x = end_x - start_x
-                delta_z = end_z - start_z
-                edge_length = math.sqrt(delta_x * delta_x + delta_z * delta_z)
-                edge_angle = -math.degrees(math.atan2(delta_z, delta_x))
-                wall, _wall_shape = cmds.polyCube(
-                    width=edge_length * 1.04,
-                    height=wall_height,
-                    depth=wall_thickness,
-                    name="{0}_wall_{1:02d}".format(cell["id"], wall_index),
-                )
-                cmds.xform(
-                    wall,
-                    translation=(
-                        (start_x + end_x) * 0.5,
-                        base_height + wall_height * 0.5 - seam_overlap,
-                        (start_z + end_z) * 0.5,
-                    ),
-                    rotation=(0.0, edge_angle, 0.0),
-                    worldSpace=True,
-                )
-                cmds.parent(wall, cell_group)
-                _assign_maya_material(cmds, wall, wax_wall_material)
-
-            queen_floor = _create_outline_prism(
-                cmds,
-                "{0}_queen_floor".format(cell["id"]),
-                _scale_outline(outline, 0.78),
-                max(0.08, cell_depth * 0.24),
-                base_y=base_height + 0.015,
-            )
-            cmds.parent(queen_floor, cell_group)
-            _assign_maya_material(cmds, queen_floor, queen_material)
-
-            cell["maya_object"] = cell_group
-            cell["content_objects"] = [queen_floor]
-            continue
-
-        visual_radius = cell_size
-        visual_depth = cell_depth
-        base_height = max(0.10, cell_depth * 0.30)
-        wall_height = max(0.42, visual_depth * 0.92)
-        wall_radius = visual_radius * 0.93
-        wall_thickness = max(cell_size * 0.13, visual_radius * 0.075)
-        seam_overlap = max(0.015, cell_depth * 0.04)
-
-        base, _base_shape = cmds.polyCylinder(
-            # Extend the floor under the wall ring.  The previous 0.91 scale
-            # exposed dark triangular gaps around the lower wall corners.
-            radius=visual_radius * 0.99,
-            height=base_height,
-            subdivisionsX=6,
-            subdivisionsY=1,
-            subdivisionsZ=0,
-            axis=(0, 1, 0),
-            name="{0}_floor".format(cell["id"]),
-        )
-        cmds.xform(base, translation=(x, base_height * 0.5, z), worldSpace=True)
-        # Maya's six-sided cylinder starts at a different angular offset from
-        # the pointy-top axial hex used by the wall vertices.  Rotate it so the
-        # floor edges and the wall edges are parallel.
-        cmds.rotate(0.0, 30.0, 0.0, base, relative=True, objectSpace=True)
-        cmds.parent(base, cell_group)
-        _assign_maya_material(cmds, base, wax_floor_material)
-
-        vertices = []
-        for vertex_index in range(6):
-            angle = math.radians(30.0 + vertex_index * 60.0)
-            vertices.append((
-                x + math.cos(angle) * wall_radius,
-                z + math.sin(angle) * wall_radius,
-            ))
-
-        for wall_index in range(6):
-            start_x, start_z = vertices[wall_index]
-            end_x, end_z = vertices[(wall_index + 1) % 6]
-            delta_x = end_x - start_x
-            delta_z = end_z - start_z
-            edge_length = math.sqrt(delta_x * delta_x + delta_z * delta_z)
-            edge_angle = -math.degrees(math.atan2(delta_z, delta_x))
-            wall, _wall_shape = cmds.polyCube(
-                width=edge_length * 1.05,
-                height=wall_height,
-                depth=wall_thickness,
-                name="{0}_wall_{1:02d}".format(cell["id"], wall_index),
-            )
-            cmds.xform(
-                wall,
-                    translation=(
-                        (start_x + end_x) * 0.5,
-                        base_height + wall_height * 0.5 - seam_overlap,
-                        (start_z + end_z) * 0.5,
-                    ),
-                rotation=(0.0, edge_angle, 0.0),
-                worldSpace=True,
-            )
-            cmds.parent(wall, cell_group)
-            _assign_maya_material(cmds, wall, wax_wall_material)
-
-        cell_type = cell.get("type")
-        content_objects = []
-        if cell_type == "honey":
-            pool, _pool_shape = cmds.polyCylinder(
-                radius=visual_radius * 0.70,
-                height=max(0.075, cell_depth * 0.22),
-                subdivisionsX=6,
-                subdivisionsY=1,
-                subdivisionsZ=0,
-                axis=(0, 1, 0),
-                name="{0}_honey_pool".format(cell["id"]),
-            )
-            cmds.xform(
-                pool,
-                translation=(x, base_height + max(0.045, cell_depth * 0.12), z),
-                worldSpace=True,
-            )
-            cmds.rotate(0.0, 30.0, 0.0, pool, relative=True, objectSpace=True)
-            cmds.parent(pool, cell_group)
-            _assign_maya_material(cmds, pool, honey_material)
-            content_objects.append(pool)
-
-            highlight, _highlight_shape = cmds.polyCube(
-                width=visual_radius * 0.30,
-                height=0.035,
-                depth=visual_radius * 0.10,
-                name="{0}_honey_glint".format(cell["id"]),
-            )
-            cmds.xform(
-                highlight,
-                translation=(
-                    x - visual_radius * 0.18,
-                    base_height + max(0.095, cell_depth * 0.27),
-                    z + visual_radius * 0.12,
-                ),
-                worldSpace=True,
-            )
-            cmds.parent(highlight, cell_group)
-            _assign_maya_material(cmds, highlight, honey_highlight_material)
-            content_objects.append(highlight)
-
-        elif cell_type == "pollen":
-            grain_size = max(0.09, cell_size * 0.13)
-            for grain_index, (offset_x, offset_z) in enumerate(pollen_offsets):
-                grain, _grain_shape = cmds.polyCube(
-                    width=grain_size,
-                    height=grain_size * (0.75 + (grain_index % 3) * 0.12),
-                    depth=grain_size,
-                    name="{0}_pollen_pixel_{1:02d}".format(cell["id"], grain_index),
-                )
-                cmds.xform(
-                    grain,
-                    translation=(
-                        x + offset_x * visual_radius,
-                        base_height + grain_size * (0.40 + (grain_index % 2) * 0.18),
-                        z + offset_z * visual_radius,
-                    ),
-                    worldSpace=True,
-                )
-                cmds.parent(grain, cell_group)
-                _assign_maya_material(
-                    cmds, grain, pollen_materials[grain_index % len(pollen_materials)]
-                )
-                content_objects.append(grain)
-
-        elif cell_type == "capped":
-            cap_height = max(0.09, cell_depth * 0.24)
-            cap, _cap_shape = cmds.polyCylinder(
-                radius=visual_radius * 0.82,
-                height=cap_height,
-                subdivisionsX=6,
-                subdivisionsY=1,
-                subdivisionsZ=0,
-                axis=(0, 1, 0),
-                name="{0}_wax_cap".format(cell["id"]),
-            )
-            cmds.xform(
-                cap,
-                translation=(x, base_height + wall_height - cap_height * 0.55, z),
-                worldSpace=True,
-            )
-            cmds.rotate(0.0, 30.0, 0.0, cap, relative=True, objectSpace=True)
-            cmds.parent(cap, cell_group)
-            _assign_maya_material(cmds, cap, cap_material)
-            content_objects.append(cap)
-
-        cell["maya_object"] = cell_group
-        cell["content_objects"] = content_objects
+            cell["content_objects"] = []
+        else:
+            cell["maya_object"] = group_name
+            cell["content_objects"] = content_objects
+            cell["voxel_pitch"] = voxel_data["pitch"]
 
     return cells
 

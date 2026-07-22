@@ -38,6 +38,7 @@ DEFAULT_INTEGRATION_PARAMETERS = {
     "visual": {
         "ground_radius": 9.0,
         "cell_depth": 0.35,
+        "voxel_density": 14,
         "cloud_scale": 0.85,
         "flowers_per_cloud": 7,
         "bee_scale": 1.0,

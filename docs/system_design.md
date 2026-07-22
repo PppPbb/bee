@@ -65,7 +65,8 @@ Planned module: `code/cloud_resource_module.py`
 
 Current pure Python interface:
 
-- `create_cloud_data(...)`: creates deterministic cloud dictionaries with resource amounts and emission points.
+- `calculate_hive_view_span(cells, cell_size)`: estimates the honeycomb's presentation-camera width for cloud composition.
+- `create_cloud_data(...)`: creates deterministic cloud dictionaries with hive-balanced random sizes, packed horizontal slots and depth rows, resource amounts, and emission points.
 - `apply_wind_offset(position, wind_strength, wind_direction_degrees)`: shifts positions horizontally on the XZ plane.
 - `generate_resource_drops(...)`: creates nectar and pollen drop records with wind-influenced landing positions.
 - `distance_2d(pos_a, pos_b)`: measures XZ-plane distance.
@@ -75,8 +76,10 @@ Current pure Python interface:
 
 Current Maya-only interface:
 
-- `create_cloud_geometry(clouds, cloud_scale)`: creates stylized sphere-cluster cloud objects.
-- `create_flower_geometry_on_clouds(clouds, flowers_per_cloud)`: creates simple flowers on top of clouds.
+- `generate_cloud_voxel_data(cloud, cloud_scale, voxel_pitch)`: builds a full three-dimensional cloud from independent ellipsoid puffs using one of four distinct silhouettes, then adds deterministic rim erosion, stepped surface chips, connected-component cleanup, and warm multi-color voxel patches. Cloud blocks use a coarser grid than the hive while flower blocks retain the hive pitch.
+- `create_cloud_geometry(clouds, cloud_scale, voxel_pitch)`: creates independently scaled five-tone merged voxel clouds on a shared grid roughly 1.85 times coarser than the hive for clearer silhouettes and lower mesh cost.
+- `generate_cloud_flower_voxel_data(cloud, flowers_per_cloud)`: creates deterministic pink, daisy, yellow-cluster, lavender, blue, and orange flower voxel layouts.
+- `create_flower_geometry_on_clouds(clouds, flowers_per_cloud)`: creates six reference-inspired, multi-tone merged-voxel flower types on top of clouds.
 - `create_drop_particles(drops)`: creates nectar and pollen drop markers in Maya.
 
 ### Bee Task And Animation System
@@ -107,6 +110,9 @@ Current pure Python interface:
 Current Maya-only interface:
 
 - `create_bee_geometry(bees, bee_scale)`: creates simple stylized bee objects in Maya.
+- `calculate_bee_frames_per_unit(tasks, cells, frame_step)`: converts frames-per-cell into one constant world-space flight speed.
+- `plan_bee_collection_cycle(...)`: chains each worker from its real previous endpoint through the cloud, landed resource, and BFS target without returning to a shared idle point.
+- `animate_bee_collection_cycle(...)`: applies the planned route with linear translation tangents, preserving constant speed between waypoints and intentional stationary waits.
 - `animate_bee_on_path(bee, task, cells, frame_start, frame_step)`: keyframes bee movement along a task path.
 - `create_task_path_visuals(tasks, cells)`: creates simple curve and marker path visuals for task paths.
 
@@ -157,8 +163,8 @@ Current Maya-only interface:
 - `create_maya_scene(config, prior_cell_state=None)`: runs the pure Python data flow and creates the Maya scene.
 - `clear_scene()`: removes previous generated Cloud-Hive Bloomfield objects.
 - `setup_camera_and_lighting(scene_radius)`: creates a camera, directional light, and ambient light.
-- `create_falling_resource_effects(drops, clouds, ...)`: creates animated cube drops and nectar streak curves.
-- `create_cell_resource_visuals(...)`: visualizes delivered nectar, pollen, and capped transitions.
+- `create_falling_resource_effects(drops, clouds, ...)`: animates shared-shape voxel instances for nectar, pollen, and glints.
+- `create_cell_resource_visuals(...)`: keeps cell contents synchronized with the action timeline: visible resource increases when a drop lands, decreases when a bee picks it up, and increases again in the target cell at delivery. Nectar uses discrete merged voxel stacks, pollen uses shared cube instances, and caps use voxel plates.
 - `create_blocked_task_visuals(...)`: marks cells whose cleanup/transport tasks have no BFS path.
 
 Maya entry script:
@@ -168,6 +174,8 @@ Maya entry script:
 Integration notes:
 
 - The Maya visualization layer is intentionally separate from the pure Python logic.
+- The honeycomb uses a global texture-free voxel lattice. Hidden faces are culled and visible voxels are merged by material before Maya mesh creation.
+- `visual.voxel_density` controls cell-radius pixel density; the default `14` produces about 28 pixels across a cell. Large hives automatically lower the effective density to keep generation bounded.
 - `visual_module.py` and the Maya entry script do not import `maya.cmds` at top level.
 - Maya-specific functions import `maya.cmds` inside function bodies and should be tested later inside Autodesk Maya.
 

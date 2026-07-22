@@ -31,6 +31,7 @@ def _ensure_controls(cmds):
     required = (
         "hive_size",
         "cell_size",
+        "voxel_density",
         "honey_ratio",
         "pollen_ratio",
         "capped_ratio",
@@ -68,6 +69,7 @@ def _read_parameters(cmds):
 
     hive["size"] = _int_value(cmds, "hive_size")
     hive["cell_size"] = _float_value(cmds, "cell_size")
+    visual["voxel_density"] = _int_value(cmds, "voxel_density")
 
     honey_ratio = _float_value(cmds, "honey_ratio")
     pollen_ratio = _float_value(cmds, "pollen_ratio")
@@ -301,6 +303,11 @@ def show_ui(initial_scene_data=None):
         fieldMinValue=0.1, fieldMaxValue=5.0,
         value=hive_defaults["cell_size"], precision=2,
     )
+    CONTROLS["voxel_density"] = cmds.intSliderGrp(
+        label="Pixel Density", field=True, minValue=8, maxValue=20,
+        fieldMinValue=8, fieldMaxValue=24,
+        value=visual_defaults.get("voxel_density", 14),
+    )
     CONTROLS["honey_ratio"] = cmds.floatSliderGrp(
         label="Honey Ratio", field=True, minValue=0.0, maxValue=1.0,
         value=hive_defaults["honey_ratio"], precision=2,
@@ -358,7 +365,7 @@ def show_ui(initial_scene_data=None):
         value=visual_defaults.get("drop_fall_frames", 64),
     )
     CONTROLS["bee_frame_step"] = cmds.intSliderGrp(
-        label="Bee Speed (Frames)", field=True, minValue=8, maxValue=50,
+        label="Bee Speed (Lower = Faster)", field=True, minValue=8, maxValue=50,
         value=visual_defaults.get("bee_frame_step", 22),
     )
     CONTROLS["show_paths"] = cmds.checkBox(
