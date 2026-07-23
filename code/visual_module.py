@@ -42,6 +42,7 @@ DEMO_STAGE_BASE_RANGES = {
 }
 DEMO_COLLECTION_START = 250
 DEMO_COLLECTION_FRAME_STEP = 6
+DEMO_STAGE_FOUR_COMPLETION_HOLD_FRAMES = 6
 DEFAULT_DEMO_MAX_ACTIVE_BEES = 0
 DEMO_STAGE_LABELS = {
     0: "Base Scene",
@@ -1643,11 +1644,15 @@ def author_demo_stage_transitions(
     secondary_path_nodes = list(
         transport_demo.get("secondary_path_visuals", [])
     )
+    active_path_reveal_end = max(
+        stage_four_start + 8,
+        stage_four_end - 8,
+    )
     _key_reveal_sequence(
         cmds,
         active_path_nodes,
         stage_four_start,
-        max(stage_four_start + 8, stage_four_end - 8),
+        active_path_reveal_end,
     )
     _key_reveal_sequence(
         cmds,
@@ -1671,6 +1676,21 @@ def author_demo_stage_transitions(
         stage_four_end,
         stage_ranges[5][0],
     )
+    active_bee_final_keyframes = [
+        int(crawl["final_keyframe"])
+        for crawl in stage_four_crawls
+        if crawl.get("final_keyframe") is not None
+    ]
+    active_bee_final_movement_frames = [
+        int(crawl["final_movement_frame"])
+        for crawl in stage_four_crawls
+        if crawl.get("final_movement_frame") is not None
+    ]
+    corrected_stage_four_end = max(
+        [int(stage_four_end), int(active_path_reveal_end)]
+        + active_bee_final_keyframes
+    )
+    stage_ranges[4] = (int(stage_four_start), corrected_stage_four_end)
     stage_objects[4].extend(list(path_visuals) + list(bee_selection_visuals))
     stage_objects[4].extend([
         crawl["bee_object"] for crawl in stage_four_crawls
@@ -1773,6 +1793,17 @@ def author_demo_stage_transitions(
         "keyed_object_count": sum(len(nodes) for nodes in stage_objects.values()),
         "stage_four_crawl": stage_four_crawls[0] if stage_four_crawls else None,
         "stage_four_crawls": stage_four_crawls,
+        "stage_four_timing": {
+            "start_frame": int(stage_four_start),
+            "end_frame": corrected_stage_four_end,
+            "active_bee_final_keyframes": active_bee_final_keyframes,
+            "active_bee_final_movement_frames": (
+                active_bee_final_movement_frames
+            ),
+            "active_path_reveal_end": int(active_path_reveal_end),
+            "marker_pulse_end": int(stage_four_end),
+            "completion_hold_frames": DEMO_STAGE_FOUR_COMPLETION_HOLD_FRAMES,
+        },
         "active_transport_task_ids": [
             assignment.get("task_id")
             for assignment in transport_demo.get("assignments", [])
@@ -1968,11 +1999,14 @@ def _key_stage_four_bee_crawls(
             continue
 
         base_position = base_transforms.get(bee_id, crawl_points[0])
+        last_frame = max(
+            int(stage_start) + 3,
+            int(stage_end) - DEMO_STAGE_FOUR_COMPLETION_HOLD_FRAMES,
+        )
         first_frame = min(
-            int(stage_end) - 4,
+            last_frame - 1,
             int(stage_start) + 2 + assignment_index * 3,
         )
-        last_frame = int(stage_end) - 2
         span = max(1, last_frame - first_frame)
         keyed_frames = []
         for index, point in enumerate(crawl_points):
@@ -2004,6 +2038,9 @@ def _key_stage_four_bee_crawls(
             "task_id": task.get("id"),
             "path": list(task.get("path", [])),
             "frames": keyed_frames,
+            "final_movement_frame": keyed_frames[-1],
+            "final_hold_frame": int(stage_end),
+            "final_keyframe": int(stage_end),
             "movement_mode": "on_hive_transport",
             "color": assignment.get("color"),
             "bee_marker": assignment.get("bee_marker"),
