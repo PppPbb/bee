@@ -29,8 +29,9 @@ The Maya layer owns geometry, materials, UI, animation curves, cameras, lights, 
 Responsibilities:
 
 - Generate a hexagonal honeycomb grid.
-- Store cell coordinates, world positions, neighbors, and cell types.
-- Assign storage types such as nectar and pollen.
+- Store cell coordinates, world positions, neighbors, cell types, and current resource state.
+- Assign storage types such as honey and pollen, while also reserving a special queen chamber footprint.
+- Model both static blocked cells (`capped`) and dynamic capacity-based blocked states.
 - Find the nearest cell for a falling resource.
 - Provide graph data for BFS pathfinding.
 - Provide Maya-only functions for terrain geometry and material assignment.
@@ -42,9 +43,19 @@ Current pure Python interface:
 - `axial_to_world(q, r, cell_size)`: converts axial coordinates to a flat XZ-plane world position.
 - `generate_hex_grid(size, cell_size)`: creates cell dictionaries for a circular axial hex grid.
 - `calculate_neighbors(cells)`: fills graph edges using the six axial neighbor directions.
-- `assign_cell_types(cells, ...)`: assigns honey, pollen, empty, and capped states reproducibly.
+- `assign_cell_types(cells, ...)`: assigns honey, pollen, empty, capped, and reserved queen-chamber-related states reproducibly.
+- `assign_queen_chamber(cells, enabled=True)`: reserves the center seven cells as a blocked queen chamber footprint.
+- `update_cell_blocked_state(cell)`: refreshes whether a cell is blocked because of capacity or manual block flags.
+- `update_all_blocked_states(cells)`: recalculates blocked status for every cell before BFS.
 - `find_nearest_storage_cell(cells, start_cell_id, target_type)`: returns the closest reachable matching storage cell.
 - `bfs_find_path(cells, start_cell_id, target_type)`: returns the shortest non-blocked path to a matching target type.
+- `visible_cell_count(cells)`: counts visible grid cells excluding hidden queen-reserved footprint cells.
+
+Implementation notes:
+
+- The current pure Python system uses additional internal cell fields such as `queen_role`, `blocked_by_capacity`, `capacity`, `nectar`, and `pollen` to represent runtime state.
+- `queen` and `queen_reserved` cells are special hidden structural cells rather than normal storage cells.
+- Capped cells remain blocked permanently, while honey/pollen cells may become blocked dynamically when their capacity is reached.
 
 Current Maya-only interface:
 
@@ -87,7 +98,8 @@ Current Maya-only interface:
 Responsibilities:
 
 - Check whether a resource matches the cell it landed on.
-- Create transport or cleaning tasks when resources are misplaced.
+- Create transport or cleanup tasks when resources are misplaced.
+- Temporarily store mis-landed resources in the source cell when the source cell is not blocked.
 - Find the nearest valid destination cell with BFS.
 - Return path data for visualization and testing.
 - Provide Maya-only functions for bee animation, path curves, and visible resource movement.
@@ -100,12 +112,19 @@ Current pure Python interface:
 - `validate_resource_cell(drop, cell)`: checks whether a mapped drop landed in a valid non-blocked storage cell.
 - `deposit_resource(drop, cell)`: adds nectar or pollen to a cell while respecting capacity.
 - `create_transport_task(drop, source_cell)`: creates transport or blocked-cleanup task dictionaries.
-- `create_tasks_from_drops(drops, cells)`: consumes mapped drops from `cloud_resource_module`, deposits valid drops, and creates tasks for invalid drops.
+- `create_tasks_from_drops(drops, cells)`: consumes mapped drops from `cloud_resource_module`, deposits valid drops, and creates tasks for invalid drops. Wrong non-blocked source cells temporarily hold the resource before a bee moves it onward.
 - `create_bees(bee_count, start_position)`: creates bee dictionaries for assignment.
 - `select_task_for_bee(bee, tasks, cells)`: assigns the highest-priority pending task, using XZ distance as a tie-breaker.
 - `assign_paths_to_tasks(tasks, cells)`: calls `hive_module.bfs_find_path()` to attach shortest paths to tasks.
-- `complete_task(task, cells)`: moves stored resources from source cells to BFS target cells and marks completed tasks.
+- `complete_task(task, cells)`: moves stored resources from source cells to BFS target cells, updates storage capacity, and marks completed tasks.
 - `summarize_tasks(tasks)`: reports task counts by status and task type.
+
+Implementation notes:
+
+- Valid resource drops are deposited directly into the mapped storage cell.
+- Invalid drops on non-blocked cells are still deposited into that source cell first, then converted into a transport task.
+- Invalid drops on blocked cells create `clean_blocked` tasks and do not use the blocked cell as a valid transport/storage node.
+- When a target storage cell reaches capacity during `complete_task()`, it can be converted into a `capped` cell, which then becomes blocked in subsequent BFS iterations.
 
 Current Maya-only interface:
 
@@ -209,10 +228,10 @@ The MVP should use simple Python data structures first, then move to dataclasses
 
 Suggested records:
 
-- `Cell`: cell id, hex coordinate, world position, cell type, current resource state, neighbor ids.
-- `ResourceDrop`: resource id, resource type, source position, landing position, mapped cell id.
-- `Task`: task id, task type, source cell id, target cell id, resource id, BFS path.
-- `Bee`: bee id, current cell id, assigned task id, movement path.
+- `Cell`: cell id, hex coordinate, world position, cell type, current resource state, neighbor ids, `is_blocked`, `blocked_by_capacity`, `queen_role`, and optional `maya_object` handle.
+- `ResourceDrop`: resource id, resource type, source position, landing position, mapped cell id, and optional `maya_object` handle.
+- `Task`: task id, task type, source cell id, target cell id, resource id, BFS path, priority, status, and optional `completed_amount`/`resource_event` metadata.
+- `Bee`: bee id, current cell id, assigned task id, movement path, and optional `task_queue` or `current_task` state from the integration layer.
 
 Suggested module interfaces:
 
@@ -221,6 +240,15 @@ Suggested module interfaces:
 - `bee_task_module` consumes cells and drops, then returns tasks and paths.
 - `visual_module` consumes cells, drops, tasks, and paths to build Maya visuals.
 - `ui_module` calls `main.py` entry points with user-selected parameters.
+
+## Runtime State Clarifications
+
+The current implementation has a few runtime rules that are stronger than the original high-level prose:
+
+- The honeycomb uses `queen` and `queen_reserved` cells to reserve the central chamber footprint and keep it structurally hidden from normal pathfinding.
+- `is_blocked` is not only a static cell-type property; it is refreshed dynamically from `capacity` and `blocked_by_capacity` during path computation.
+- `bfs_find_path()` recomputes the blocked state of the whole cell graph before searching, so path reachability depends on the current resource fill state of the honeycomb.
+- The task layer is not purely a planner for "wrong drop" events. It also carries per-task resource transfer data and records post-transfer state such as whether a target cell became capped.
 
 ## MVP Scope
 

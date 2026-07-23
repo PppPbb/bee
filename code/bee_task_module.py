@@ -1075,6 +1075,236 @@ def create_bee_geometry(bees, bee_scale=1.0):
     return bees
 
 
+def _create_queen_cube(
+    cmds,
+    parent,
+    name,
+    dimensions,
+    translation,
+    material,
+    rotation=(0.0, 0.0, 0.0),
+):
+    """Create one box-shaped component of the pixel-style queen bee."""
+    cube, _shape = cmds.polyCube(
+        width=dimensions[0],
+        height=dimensions[1],
+        depth=dimensions[2],
+        name=name,
+    )
+    cmds.parent(cube, parent)
+    cmds.setAttr(cube + ".translate", *translation, type="double3")
+    cmds.setAttr(cube + ".rotate", *rotation, type="double3")
+    _assign_maya_material(cmds, cube, material)
+    return cube
+
+
+def create_queen_geometry(cells, queen_scale=1.45, cell_depth=0.35):
+    """Create one large pixel-style queen in the central queen chamber.
+
+    The queen is a static presentation character and is intentionally kept out
+    of worker task assignment and flight animation.  Its vertical position is
+    derived from the generated hive voxel pitch so it stays seated on the
+    amber queen-room floor at different voxel densities.
+
+    Parameters:
+        cells (list[dict]): Honeycomb cells containing one queen center cell.
+        queen_scale (float): Absolute visual scale for the queen model.
+        cell_depth (float): Honeycomb base depth used as a pitch fallback.
+
+    Returns:
+        dict | None: Queen metadata, or None when no queen chamber is present.
+    """
+    import maya.cmds as cmds
+
+    if queen_scale <= 0:
+        raise ValueError("queen_scale must be greater than 0")
+    if cell_depth <= 0:
+        raise ValueError("cell_depth must be greater than 0")
+
+    queen_cell = next(
+        (
+            cell
+            for cell in cells
+            if cell.get("queen_role") == "center" or cell.get("type") == "queen"
+        ),
+        None,
+    )
+    if queen_cell is None:
+        return None
+
+    root_group = "CloudHive_Bees_GRP"
+    if not cmds.objExists(root_group):
+        cmds.group(empty=True, name=root_group)
+
+    queen_group = "CloudHive_Queen_GRP"
+    if cmds.objExists(queen_group):
+        cmds.delete(queen_group)
+    cmds.group(empty=True, name=queen_group)
+    cmds.parent(queen_group, root_group)
+
+    body_material = _create_maya_material(
+        cmds,
+        "chm_bee_body_gold_MAT",
+        (1.0, 0.72, 0.05),
+    )
+    stripe_material = _create_maya_material(
+        cmds,
+        "chm_bee_stripe_dark_MAT",
+        (0.08, 0.06, 0.04),
+    )
+    thorax_material = _create_maya_material(
+        cmds,
+        "chm_queen_thorax_amber_MAT",
+        (0.94, 0.48, 0.035),
+    )
+    wing_material = _create_maya_material(
+        cmds,
+        "chm_queen_wing_cream_MAT",
+        (1.0, 0.91, 0.68),
+    )
+    crown_material = _create_maya_material(
+        cmds,
+        "chm_queen_crown_gold_MAT",
+        (1.0, 0.84, 0.16),
+    )
+    highlight_material = _create_maya_material(
+        cmds,
+        "chm_queen_highlight_MAT",
+        (1.0, 0.96, 0.62),
+    )
+
+    scale = float(queen_scale)
+
+    def scaled(values):
+        return tuple(float(value) * scale for value in values)
+
+    parts = []
+
+    def add_part(
+        suffix,
+        dimensions,
+        translation,
+        material,
+        rotation=(0.0, 0.0, 0.0),
+    ):
+        part = _create_queen_cube(
+            cmds,
+            queen_group,
+            "CloudHive_Queen_{0}".format(suffix),
+            scaled(dimensions),
+            scaled(translation),
+            material,
+            rotation=rotation,
+        )
+        parts.append(part)
+        return part
+
+    # A long abdomen is the strongest natural silhouette difference from the
+    # compact worker model.  The smaller rear block gives it a pixel taper.
+    add_part("abdomen", (0.92, 0.36, 0.44), (-0.24, 0.0, 0.0), body_material)
+    add_part("abdomen_tip", (0.22, 0.28, 0.34), (-0.80, -0.02, 0.0), body_material)
+    add_part("thorax", (0.42, 0.44, 0.46), (0.40, 0.03, 0.0), thorax_material)
+    add_part("head", (0.32, 0.34, 0.36), (0.77, 0.02, 0.0), body_material)
+
+    for stripe_index, offset_x in enumerate((-0.49, -0.24, 0.01)):
+        add_part(
+            "stripe_{0:02d}".format(stripe_index),
+            (0.06, 0.375, 0.455),
+            (offset_x, 0.0, 0.0),
+            stripe_material,
+        )
+
+    # A small cream pixel on the back reads as a specular highlight even in a
+    # low-resolution render and keeps the long abdomen from looking flat.
+    add_part(
+        "abdomen_highlight",
+        (0.20, 0.045, 0.09),
+        (-0.45, 0.20, -0.11),
+        highlight_material,
+    )
+
+    # Two wing pairs are larger than the worker wings but retain the same box
+    # construction.  Their slight fan angles make the top silhouette readable.
+    for side_index, side in enumerate((-1.0, 1.0)):
+        add_part(
+            "wing_front_{0:02d}".format(side_index),
+            (0.44, 0.05, 0.34),
+            (0.24, 0.30, side * 0.37),
+            wing_material,
+            rotation=(0.0, side * 12.0, 0.0),
+        )
+        add_part(
+            "wing_rear_{0:02d}".format(side_index),
+            (0.34, 0.045, 0.25),
+            (-0.18, 0.25, side * 0.33),
+            wing_material,
+            rotation=(0.0, side * 8.0, 0.0),
+        )
+
+    # Eyes, antennae, and three leg pairs provide a more complete silhouette
+    # than the task workers while staying within the same hard-edged style.
+    for side_index, side in enumerate((-1.0, 1.0)):
+        add_part(
+            "eye_{0:02d}".format(side_index),
+            (0.065, 0.13, 0.075),
+            (0.92, 0.04, side * 0.145),
+            stripe_material,
+        )
+        add_part(
+            "antenna_{0:02d}".format(side_index),
+            (0.27, 0.045, 0.045),
+            (1.02, 0.18, side * 0.12),
+            stripe_material,
+            rotation=(0.0, 0.0, -32.0),
+        )
+
+    for leg_index, offset_x in enumerate((-0.28, 0.10, 0.43)):
+        for side_index, side in enumerate((-1.0, 1.0)):
+            add_part(
+                "leg_{0:02d}_{1:02d}".format(leg_index, side_index),
+                (0.065, 0.065, 0.26),
+                (offset_x, -0.18, side * 0.29),
+                stripe_material,
+                rotation=(side * 14.0, 0.0, 0.0),
+            )
+
+    # A simple three-prong pixel crown is deliberately stylized so the queen
+    # can be identified immediately when the full hive is framed in camera.
+    add_part("crown_base", (0.31, 0.07, 0.30), (0.72, 0.25, 0.0), crown_material)
+    crown_heights = (0.15, 0.22, 0.15)
+    for crown_index, (offset_z, height) in enumerate(
+        zip((-0.11, 0.0, 0.11), crown_heights)
+    ):
+        add_part(
+            "crown_tip_{0:02d}".format(crown_index),
+            (0.075, height, 0.075),
+            (0.72, 0.285 + height * 0.5, offset_z),
+            crown_material,
+        )
+
+    pitch = float(queen_cell.get("voxel_pitch") or max(cell_depth / 5.0, 0.05))
+    base_layers = max(3, int(round(float(cell_depth) / pitch)))
+    chamber_floor_y = (base_layers + 1) * pitch
+    queen_center_y = chamber_floor_y + 0.22 * scale + pitch * 0.04
+    center_x, _center_y, center_z = queen_cell["position"]
+    queen_position = (center_x, queen_center_y, center_z)
+    cmds.xform(
+        queen_group,
+        translation=queen_position,
+        rotation=(0.0, -28.0, 0.0),
+        worldSpace=True,
+    )
+
+    return {
+        "id": "queen_00",
+        "position": list(queen_position),
+        "chamber_cell": queen_cell["id"],
+        "scale": scale,
+        "maya_object": queen_group,
+        "parts": parts,
+    }
+
+
 def animate_bee_collection_cycle(
     bee,
     task,

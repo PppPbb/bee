@@ -53,6 +53,7 @@ DEFAULT_INTEGRATION_PARAMETERS = {
         "cloud_scale": 0.85,
         "flowers_per_cloud": 7,
         "bee_scale": 1.0,
+        "queen_scale": 1.45,
         "background_seed": 77,
         "animation_end": 320,
         "drop_fall_frames": 64,
