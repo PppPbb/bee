@@ -35,6 +35,17 @@ DEFAULT_INTEGRATION_PARAMETERS = {
     "tasks": {
         "max_tasks_to_complete": 999,
     },
+    "resources": {
+        "consumption_per_cycle": 0.05,
+        "collection_thresholds": {
+            "nectar": 1.5,
+            "pollen": 1.2,
+        },
+        "collection_amount": 0.4,
+    },
+    "simulation": {
+        "cycle": 0,
+    },
     "visual": {
         "ground_radius": 9.0,
         "cell_depth": 0.35,
@@ -46,6 +57,9 @@ DEFAULT_INTEGRATION_PARAMETERS = {
         "animation_end": 320,
         "drop_fall_frames": 64,
         "bee_frame_step": 22,
+        "frame_duration_multiplier": 4.0,
+        # 0 disables the optional presentation cap and uses every available bee.
+        "demo_max_active_bees": 0,
         "show_paths": True,
         "render_background": True,
     },
