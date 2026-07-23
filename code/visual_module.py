@@ -42,6 +42,7 @@ DEMO_STAGE_BASE_RANGES = {
 }
 DEMO_COLLECTION_START = 250
 DEMO_COLLECTION_FRAME_STEP = 6
+DEFAULT_DEMO_MAX_ACTIVE_BEES = 0
 DEMO_STAGE_LABELS = {
     0: "Base Scene",
     1: "Natural Resource Drop",
@@ -66,6 +67,20 @@ DEMO_VISUAL_GROUPS = {
     "collection_visuals": "CloudHive_CollectionVisuals_GRP",
     "deposit_updates": "CloudHive_DepositUpdate_GRP",
 }
+
+
+def _resolve_demo_active_bee_limit(task_count, bee_count, optional_cap=None):
+    """Return the active worker count; non-positive caps mean unlimited."""
+    available_task_count = max(0, int(task_count))
+    available_bee_count = max(0, int(bee_count))
+    active_limit = min(available_task_count, available_bee_count)
+    try:
+        configured_cap = int(optional_cap) if optional_cap is not None else 0
+    except (TypeError, ValueError):
+        configured_cap = 0
+    if configured_cap > 0:
+        active_limit = min(active_limit, configured_cap)
+    return active_limit
 
 
 def _maya_safe_name_component(value):
@@ -123,6 +138,10 @@ def create_maya_scene(config=None, prior_cell_state=None):
     flowers_per_cloud = visual_params.get("flowers_per_cloud", 5)
     bee_scale = visual_params.get("bee_scale", 1.0)
     show_paths = visual_params.get("show_paths", True)
+    demo_max_active_bees = visual_params.get(
+        "demo_max_active_bees",
+        DEFAULT_DEMO_MAX_ACTIVE_BEES,
+    )
     create_honeycomb_geometry(
         cells,
         hive_params["cell_size"],
@@ -188,9 +207,25 @@ def create_maya_scene(config=None, prior_cell_state=None):
         for bee in bees
         if bee.get("maya_object") and cmds.objExists(bee["maya_object"])
     }
+    visual_bees = [
+        bee
+        for bee in bees
+        if bee.get("maya_object") and cmds.objExists(bee["maya_object"])
+    ]
+    transport_assignments, secondary_transport_tasks = (
+        select_demo_transport_assignments(
+            visual_bees,
+            tasks,
+            demo_max_active_bees,
+        )
+    )
     path_visuals = []
     if show_paths:
         path_visuals = create_task_path_visuals(tasks, cells)
+    path_visual_layers = style_demo_transport_paths(
+        tasks,
+        transport_assignments,
+    )
     animation_records = animate_assigned_bees(
         bees,
         tasks,
@@ -219,12 +254,22 @@ def create_maya_scene(config=None, prior_cell_state=None):
         cells,
         cell_size=hive_params["cell_size"],
     )
-    bee_selection_visuals = create_bee_task_selection_visuals(bees)
+    transport_demo = create_bee_task_selection_visuals(
+        bees,
+        tasks,
+        cells,
+        transport_assignments,
+        cell_size=hive_params["cell_size"],
+    )
+    transport_demo.update(path_visual_layers)
+    transport_demo["secondary_tasks"] = secondary_transport_tasks
+    bee_selection_visuals = transport_demo["all_markers"]
     collection_tasks, collection_check = create_collection_demo_tasks(
         cells,
         clouds,
         bees,
         parameters,
+        bee_base_transforms=bee_base_transforms,
     )
     collection_visuals = create_collection_demo_visuals(
         collection_tasks,
@@ -232,6 +277,12 @@ def create_maya_scene(config=None, prior_cell_state=None):
         cells,
         frame_start=DEMO_COLLECTION_START,
         frame_step=DEMO_COLLECTION_FRAME_STEP,
+    )
+    collection_check["active_task_count"] = sum(
+        bool(task.get("demo_active")) for task in collection_tasks
+    )
+    collection_check["queued_task_count"] = (
+        len(collection_tasks) - collection_check["active_task_count"]
     )
     deposit_visuals = create_deposit_update_visuals(
         cells,
@@ -267,6 +318,7 @@ def create_maya_scene(config=None, prior_cell_state=None):
         blocked_visuals=blocked_visuals,
         drop_demo_visuals=drop_demo_visuals,
         bee_selection_visuals=bee_selection_visuals,
+        transport_demo=transport_demo,
         collection_tasks=collection_tasks,
         deposit_visuals=deposit_visuals,
         stage_ranges=playback_ranges,
@@ -316,7 +368,12 @@ def create_maya_scene(config=None, prior_cell_state=None):
         "blocked_visuals": blocked_visuals,
         "drop_demo_visuals": drop_demo_visuals,
         "bee_selection_visuals": bee_selection_visuals,
+        "transport_demo": transport_demo,
+        "active_transport_bee_count": len(transport_assignments),
         "collection_tasks": collection_tasks,
+        "active_collection_bee_count": sum(
+            bool(task.get("demo_active")) for task in collection_tasks
+        ),
         "collection_check": collection_check,
         "collection_visuals": collection_visuals,
         "deposit_visuals": deposit_visuals,
@@ -465,7 +522,13 @@ def animate_assigned_bees(bees, tasks, cells, clouds, drops, frame_step=22):
     return records
 
 
-def create_collection_demo_tasks(cells, clouds, bees, parameters):
+def create_collection_demo_tasks(
+    cells,
+    clouds,
+    bees,
+    parameters,
+    bee_base_transforms=None,
+):
     """Create shortage-driven collection-ready records without mutating storage.
 
     These records drive the explanatory Stage 5/6 visuals. Natural drops and
@@ -487,6 +550,8 @@ def create_collection_demo_tasks(cells, clouds, bees, parameters):
         "thresholds": normalized_thresholds,
         "needed_resources": [],
         "presentation_resource": None,
+        "active_task_count": 0,
+        "queued_task_count": 0,
     }
 
     traversable_cells = [
@@ -519,14 +584,30 @@ def create_collection_demo_tasks(cells, clouds, bees, parameters):
         planned_resources = needed_resources
         check["needed_resources"] = list(needed_resources)
 
+    max_active_bees = parameters.get("visual", {}).get(
+        "demo_max_active_bees",
+        DEFAULT_DEMO_MAX_ACTIVE_BEES,
+    )
+    active_limit = _resolve_demo_active_bee_limit(
+        len(planned_resources),
+        len(bees),
+        max_active_bees,
+    )
+    base_transforms = bee_base_transforms or {}
+
     for task_index, resource_type in enumerate(planned_resources):
         resource_index = resource_types.index(resource_type)
         total = totals[resource_type]
         threshold = normalized_thresholds[resource_type]
 
-        assigned_bee = bees[task_index % len(bees)] if bees else None
+        active_task_index = len(tasks)
+        demo_active = active_task_index < active_limit
+        assigned_bee = bees[active_task_index] if demo_active else None
         bee_start = (
-            assigned_bee.get("position", [0.0, 0.8, 0.0])
+            base_transforms.get(
+                assigned_bee.get("id"),
+                assigned_bee.get("position", [0.0, 0.8, 0.0]),
+            )
             if assigned_bee
             else [0.0, 0.8, 0.0]
         )
@@ -581,6 +662,8 @@ def create_collection_demo_tasks(cells, clouds, bees, parameters):
             "shortage": shortage,
             "source_cloud": cloud["id"],
             "assigned_bee_id": assigned_bee.get("id") if assigned_bee else None,
+            "demo_active": demo_active,
+            "demo_queue_state": "active" if demo_active else "queued",
             "target_flower_position": flower_position,
             "hive_start_cell": start_cell["id"],
             "cloud_base_cell": base_cell["id"],
@@ -590,6 +673,10 @@ def create_collection_demo_tasks(cells, clouds, bees, parameters):
         }
         tasks.append(task)
 
+    check["active_task_count"] = sum(
+        bool(task.get("demo_active")) for task in tasks
+    )
+    check["queued_task_count"] = len(tasks) - check["active_task_count"]
     return tasks, check
 
 
@@ -774,7 +861,7 @@ def create_drop_demo_visuals(drops, tasks, cells, cell_size):
 
 
 def create_collection_demo_visuals(collection_tasks, bees, cells, frame_start, frame_step):
-    """Create collection trigger/routes and key bee crawl-vs-flight segments."""
+    """Create distinct shortage triggers and unique multi-bee collection routes."""
     import maya.cmds as cmds
 
     trigger_group = _replace_empty_group(
@@ -787,32 +874,78 @@ def create_collection_demo_visuals(collection_tasks, bees, cells, frame_start, f
         cmds, "chm_demo_collection_nectar_MAT", (1.0, 0.72, 0.05)
     )
     pollen_material = _create_maya_material(
-        cmds, "chm_demo_collection_pollen_MAT", (1.0, 0.30, 0.05)
+        cmds, "chm_demo_collection_pollen_MAT", (0.72, 0.20, 1.0)
+    )
+    pollen_grain_material = _create_maya_material(
+        cmds, "chm_demo_collection_pollen_grain_MAT", (1.0, 0.30, 0.05)
+    )
+    queued_nectar_material = _create_maya_material(
+        cmds, "chm_demo_collection_queued_nectar_MAT", (0.48, 0.36, 0.16)
+    )
+    queued_pollen_material = _create_maya_material(
+        cmds, "chm_demo_collection_queued_pollen_MAT", (0.38, 0.26, 0.46)
     )
     cell_by_id = {cell["id"]: cell for cell in cells}
     created = []
     bee_by_id = {bee.get("id"): bee for bee in bees}
     base_cursor = max(1, int(frame_start))
     safe_step = max(1, int(frame_step))
+    active_index = 0
+    used_bee_ids = set()
 
     for index, task in enumerate(collection_tasks):
-        cursor = base_cursor + index * max(1, safe_step // 2)
         resource_type = task.get("resource_type", "nectar")
-        resource_material = (
+        active_resource_material = (
             nectar_material if resource_type == "nectar" else pollen_material
         )
-        flower_position = tuple(task["target_flower_position"])
-        trigger, _shape = cmds.polySphere(
-            radius=0.26,
-            name="CloudHive_collection_trigger_{0:02d}".format(index),
+        queued_resource_material = (
+            queued_nectar_material
+            if resource_type == "nectar"
+            else queued_pollen_material
         )
+        assigned_bee_id = task.get("assigned_bee_id")
+        bee = bee_by_id.get(assigned_bee_id)
+        bee_object = bee.get("maya_object") if bee else None
+        is_active = bool(
+            task.get("demo_active")
+            and assigned_bee_id
+            and assigned_bee_id not in used_bee_ids
+            and bee_object
+            and cmds.objExists(bee_object)
+        )
+        if not is_active:
+            task["demo_active"] = False
+            task["demo_queue_state"] = "queued"
+            task["assigned_bee_id"] = None
+            bee = None
+            bee_object = None
+        resource_material = (
+            active_resource_material if is_active else queued_resource_material
+        )
+        flower_position = tuple(task["target_flower_position"])
+        if resource_type == "nectar":
+            trigger, _shape = cmds.polySphere(
+                radius=0.28 if is_active else 0.19,
+                name="CloudHive_nectar_collection_trigger_{0:02d}".format(index),
+            )
+            cmds.setAttr(trigger + ".scaleX", 0.72)
+            cmds.setAttr(trigger + ".scaleY", 1.28)
+            cmds.setAttr(trigger + ".scaleZ", 0.72)
+        else:
+            trigger, _shape = cmds.polyCube(
+                width=0.34 if is_active else 0.22,
+                height=0.34 if is_active else 0.22,
+                depth=0.34 if is_active else 0.22,
+                name="CloudHive_pollen_collection_trigger_{0:02d}".format(index),
+            )
+            cmds.xform(trigger, rotation=(18.0, 45.0, 18.0), worldSpace=True)
         cmds.xform(trigger, translation=flower_position, worldSpace=True)
         cmds.parent(trigger, trigger_group)
         _assign_maya_material(cmds, trigger, resource_material)
         created.append(trigger)
 
         halo, _shape = cmds.polyCylinder(
-            radius=0.48,
+            radius=0.48 if is_active else 0.32,
             height=0.045,
             subdivisionsX=18,
             name="CloudHive_collection_shortage_halo_{0:02d}".format(index),
@@ -830,9 +963,9 @@ def create_collection_demo_visuals(collection_tasks, bees, cells, frame_start, f
         if base_cell is not None:
             base_x, base_y, base_z = base_cell["position"]
             task_marker, _shape = cmds.polyCube(
-                width=0.24,
-                height=0.62,
-                depth=0.24,
+                width=0.24 if is_active else 0.16,
+                height=0.62 if is_active else 0.34,
+                depth=0.24 if is_active else 0.16,
                 name="CloudHive_collection_task_marker_{0:02d}".format(index),
             )
             cmds.xform(
@@ -844,6 +977,19 @@ def create_collection_demo_visuals(collection_tasks, bees, cells, frame_start, f
             _assign_maya_material(cmds, task_marker, resource_material)
             created.append(task_marker)
 
+        task["trigger_visuals"] = [
+            node
+            for node in (trigger, halo, task_marker if base_cell is not None else None)
+            if node
+        ]
+        task["visual_state"] = "active" if is_active else "queued"
+        if not is_active:
+            continue
+
+        used_bee_ids.add(assigned_bee_id)
+        cursor = base_cursor + active_index * max(1, safe_step // 2)
+        active_index += 1
+
         crawl_points = []
         for cell_id in task.get("path", []):
             cell = cell_by_id.get(cell_id)
@@ -852,6 +998,10 @@ def create_collection_demo_visuals(collection_tasks, bees, cells, frame_start, f
                 crawl_points.append((x, y + 0.62, z))
         crawl_points = _sample_demo_points(crawl_points, max_points=6)
         if not crawl_points:
+            task["demo_active"] = False
+            task["demo_queue_state"] = "queued"
+            task["assigned_bee_id"] = None
+            used_bee_ids.discard(assigned_bee_id)
             continue
 
         if len(crawl_points) > 1:
@@ -868,6 +1018,7 @@ def create_collection_demo_visuals(collection_tasks, bees, cells, frame_start, f
                 line_width=4,
             )
             created.append(crawl_curve)
+            task["crawl_curve_object"] = crawl_curve
 
         hive_position = crawl_points[-1]
         flight_midpoint = (
@@ -888,6 +1039,37 @@ def create_collection_demo_visuals(collection_tasks, bees, cells, frame_start, f
             line_width=4,
         )
         created.append(flight_curve)
+        task["flight_curve_object"] = flight_curve
+
+        bee_bounds = cmds.exactWorldBoundingBox(bee_object)
+        selected_marker, _shape = cmds.polyTorus(
+            radius=0.42,
+            sectionRadius=0.065,
+            subdivisionsX=12,
+            subdivisionsY=4,
+            name="CloudHive_collection_bee_selected_{0:02d}".format(index),
+        )
+        cmds.xform(
+            selected_marker,
+            translation=(
+                (bee_bounds[0] + bee_bounds[3]) * 0.5,
+                bee_bounds[4] + 0.44,
+                (bee_bounds[2] + bee_bounds[5]) * 0.5,
+            ),
+            worldSpace=True,
+        )
+        cmds.parent(selected_marker, visual_group)
+        _assign_maya_material(cmds, selected_marker, active_resource_material)
+        cmds.pointConstraint(
+            bee_object,
+            selected_marker,
+            maintainOffset=True,
+            name="CloudHive_collection_bee_selected_{0:02d}_pointConstraint".format(
+                index
+            ),
+        )
+        created.append(selected_marker)
+        task["selected_bee_marker"] = selected_marker
 
         crawl_frames = [cursor + point_index * safe_step for point_index in range(len(crawl_points))]
         takeoff_frame = crawl_frames[-1]
@@ -905,113 +1087,390 @@ def create_collection_demo_visuals(collection_tasks, bees, cells, frame_start, f
             return_midpoint_frame,
             reentry_frame,
         ]
+        task["crawl_frames"] = list(crawl_frames)
+        task["flight_frames"] = [
+            takeoff_frame,
+            midpoint_frame,
+            collection_frame,
+            return_midpoint_frame,
+            reentry_frame,
+        ]
+        task["bee_id"] = assigned_bee_id
+        task["movement_segments"] = {
+            "on_hive": (crawl_frames[0], takeoff_frame),
+            "cloud_flight": (takeoff_frame, collection_frame),
+            "on_hive_reentry": (collection_frame, reentry_frame),
+        }
+        keyed_positions = list(zip(crawl_frames, crawl_points)) + [
+            (midpoint_frame, flight_midpoint),
+            (collection_frame, flower_position),
+            (return_midpoint_frame, flight_midpoint),
+            (reentry_frame, hive_position),
+        ]
+        for frame, position in keyed_positions:
+            _key_translation(cmds, bee_object, frame, position)
+        try:
+            cmds.keyTangent(
+                bee_object,
+                attribute=("translateX", "translateY", "translateZ"),
+                time=(crawl_frames[0], reentry_frame),
+                inTangentType="linear",
+                outTangentType="linear",
+            )
+        except RuntimeError:
+            pass
 
-        if bees:
-            bee = bee_by_id.get(task.get("assigned_bee_id"))
-            if bee is None:
-                bee = bees[index % len(bees)]
-            bee_object = bee.get("maya_object")
-            task["bee_id"] = bee.get("id")
-            if bee_object and cmds.objExists(bee_object):
-                keyed_positions = list(zip(crawl_frames, crawl_points)) + [
-                    (midpoint_frame, flight_midpoint),
-                    (collection_frame, flower_position),
-                    (return_midpoint_frame, flight_midpoint),
-                    (reentry_frame, hive_position),
-                ]
-                for frame, position in keyed_positions:
-                    cmds.currentTime(frame)
-                    cmds.xform(bee_object, translation=position, worldSpace=True)
-                    cmds.setKeyframe(bee_object, attribute="translate", time=frame)
-
-                payload, _shape = cmds.polyCube(
-                    width=0.14,
-                    height=0.14,
-                    depth=0.14,
-                    name="CloudHive_collection_payload_{0:02d}".format(index),
+        if resource_type == "nectar":
+            payload, _shape = cmds.polySphere(
+                radius=0.13,
+                name="CloudHive_nectar_collection_payload_{0:02d}".format(index),
+            )
+            cmds.setAttr(payload + ".scaleX", 0.72)
+            cmds.setAttr(payload + ".scaleY", 1.28)
+            cmds.setAttr(payload + ".scaleZ", 0.72)
+            _assign_maya_material(cmds, payload, nectar_material)
+            task["payload_style"] = "amber_droplet"
+        else:
+            payload = cmds.group(
+                empty=True,
+                name="CloudHive_pollen_collection_payload_{0:02d}".format(index),
+            )
+            grain_offsets = (
+                (-0.07, 0.0, 0.0),
+                (0.07, 0.0, 0.0),
+                (0.0, 0.08, 0.04),
+            )
+            for grain_index, offset in enumerate(grain_offsets):
+                grain, _shape = cmds.polyCube(
+                    width=0.10,
+                    height=0.10,
+                    depth=0.10,
+                    name="CloudHive_pollen_payload_{0:02d}_grain_{1}".format(
+                        index,
+                        grain_index,
+                    ),
                 )
-                parented = cmds.parent(payload, bee_object)
-                if parented:
-                    payload = parented[0]
-                if cmds.objExists(payload):
-                    cmds.xform(payload, translation=(0.0, -0.25, 0.0), objectSpace=True)
-                    _assign_maya_material(cmds, payload, resource_material)
-                    cmds.setKeyframe(
-                        payload,
-                        attribute="visibility",
-                        time=max(1, collection_frame - 1),
-                        value=0,
-                    )
-                    cmds.setKeyframe(
-                        payload,
-                        attribute="visibility",
-                        time=collection_frame,
-                        value=1,
-                    )
-                    cmds.setKeyframe(
-                        payload,
-                        attribute="visibility",
-                        time=reentry_frame,
-                        value=1,
-                    )
-                    cmds.setKeyframe(
-                        payload,
-                        attribute="visibility",
-                        time=reentry_frame + 1,
-                        value=0,
-                    )
-                    task["payload_object"] = payload
+                cmds.parent(grain, payload)
+                cmds.xform(grain, translation=offset, objectSpace=True)
+                _assign_maya_material(
+                    cmds,
+                    grain,
+                    pollen_material if grain_index == 1 else pollen_grain_material,
+                )
+            task["payload_style"] = "orange_purple_grain_cluster"
+
+        parented = cmds.parent(payload, bee_object)
+        if parented:
+            payload = parented[0]
+        if cmds.objExists(payload):
+            cmds.xform(payload, translation=(0.0, -0.25, 0.0), objectSpace=True)
+            cmds.setKeyframe(
+                payload,
+                attribute="visibility",
+                time=max(1, collection_frame - 1),
+                value=0,
+            )
+            cmds.setKeyframe(
+                payload,
+                attribute="visibility",
+                time=collection_frame,
+                value=1,
+            )
+            cmds.setKeyframe(
+                payload,
+                attribute="visibility",
+                time=reentry_frame,
+                value=1,
+            )
+            cmds.setKeyframe(
+                payload,
+                attribute="visibility",
+                time=reentry_frame + 1,
+                value=0,
+            )
+            task["payload_object"] = payload
 
     return created
 
 
-def create_bee_task_selection_visuals(bees):
-    """Create static Stage 4 markers over bees that received hive tasks."""
+def _demo_task_color(task, assignment_index):
+    """Return a strong task color while preserving resource identity."""
+    if task.get("resource_type") == "nectar":
+        palette = ((1.0, 0.62, 0.04), (1.0, 0.82, 0.18))
+    else:
+        palette = ((0.72, 0.24, 1.0), (1.0, 0.30, 0.06))
+    return palette[int(assignment_index) % len(palette)]
+
+
+def select_demo_transport_assignments(bees, tasks, max_active_bees=None):
+    """Select one unique queued on-hive task per available Stage 4 worker."""
+    task_by_id = {task.get("id"): task for task in tasks}
+    candidate_ids_by_bee = []
+    eligible_task_ids = set()
+    for bee in bees:
+        preferred_task_ids = []
+        current_task_id = bee.get("current_task")
+        if current_task_id:
+            preferred_task_ids.append(current_task_id)
+        preferred_task_ids.extend(
+            task_id
+            for task_id in bee.get("task_queue", [])
+            if task_id not in preferred_task_ids
+        )
+        candidate_task_ids = [
+            task_id
+            for task_id in preferred_task_ids
+            if task_by_id.get(task_id)
+            and len(task_by_id[task_id].get("path") or []) > 1
+            and task_by_id[task_id].get("origin")
+            not in ("collection", "collection_demo")
+        ]
+        candidate_ids_by_bee.append(candidate_task_ids)
+        eligible_task_ids.update(candidate_task_ids)
+
+    safe_limit = _resolve_demo_active_bee_limit(
+        len(eligible_task_ids),
+        len(bees),
+        max_active_bees,
+    )
+    assignments = []
+    selected_task_ids = set()
+
+    for bee, preferred_task_ids in zip(bees, candidate_ids_by_bee):
+        if len(assignments) >= safe_limit:
+            break
+        task = next(
+            (
+                task_by_id.get(task_id)
+                for task_id in preferred_task_ids
+                if task_id not in selected_task_ids
+            ),
+            None,
+        )
+        if task is None:
+            continue
+        assignment_index = len(assignments)
+        assignment = {
+            "bee_id": bee.get("id"),
+            "bee": bee,
+            "bee_object": bee.get("maya_object"),
+            "task_id": task.get("id"),
+            "task": task,
+            "source_cell": task.get("source_cell"),
+            "target_cell": task.get("target_cell")
+            or (task.get("path") or [None])[-1],
+            "resource_type": task.get("resource_type"),
+            "path": list(task.get("path") or []),
+            "color": _demo_task_color(task, assignment_index),
+            "visual_state": "active",
+        }
+        task["demo_transport_state"] = "active"
+        task["demo_transport_bee_id"] = bee.get("id")
+        task["demo_transport_color"] = assignment["color"]
+        assignments.append(assignment)
+        selected_task_ids.add(task.get("id"))
+
+    queued_task_ids = {
+        task_id
+        for candidate_task_ids in candidate_ids_by_bee
+        for task_id in candidate_task_ids
+    }
+    secondary_tasks = []
+    for task in tasks:
+        if (
+            len(task.get("path") or []) > 1
+            and task.get("id") not in selected_task_ids
+            and task.get("origin") not in ("collection", "collection_demo")
+        ):
+            task["demo_transport_state"] = (
+                "queued" if task.get("id") in queued_task_ids else "secondary"
+            )
+            task["demo_transport_bee_id"] = None
+            secondary_tasks.append(task)
+
+    return assignments, secondary_tasks
+
+
+def _set_demo_viewport_color(cmds, node, color, line_width=None):
+    """Apply a readable viewport override to a curve or marker transform."""
+    if not node or not cmds.objExists(node):
+        return
+    shapes = cmds.listRelatives(node, shapes=True, fullPath=True) or []
+    for shape in shapes:
+        cmds.setAttr(shape + ".overrideEnabled", 1)
+        cmds.setAttr(shape + ".overrideRGBColors", 1)
+        cmds.setAttr(shape + ".overrideColorRGB", *color, type="double3")
+        if (
+            line_width is not None
+            and cmds.attributeQuery("lineWidth", node=shape, exists=True)
+        ):
+            cmds.setAttr(shape + ".lineWidth", int(line_width))
+
+
+def style_demo_transport_paths(tasks, assignments):
+    """Make active task paths strong and unanimated queued paths subtle."""
+    import maya.cmds as cmds
+
+    assignment_by_task = {
+        assignment["task_id"]: assignment for assignment in assignments
+    }
+    active_nodes = []
+    secondary_nodes = []
+    for task in tasks:
+        nodes = [
+            node
+            for node in task.get("path_visual_objects", [])
+            if node and cmds.objExists(node)
+        ]
+        if not nodes:
+            continue
+        assignment = assignment_by_task.get(task.get("id"))
+        if assignment is not None:
+            color = assignment["color"]
+            for node in nodes:
+                is_curve = node == task.get("path_curve_object")
+                _set_demo_viewport_color(
+                    cmds,
+                    node,
+                    color,
+                    line_width=6 if is_curve else None,
+                )
+            assignment["path_visuals"] = list(nodes)
+            active_nodes.extend(nodes)
+        else:
+            for node in nodes:
+                is_curve = node == task.get("path_curve_object")
+                _set_demo_viewport_color(
+                    cmds,
+                    node,
+                    (0.20, 0.34, 0.44),
+                    line_width=1 if is_curve else None,
+                )
+                if not is_curve:
+                    for axis in "XYZ":
+                        cmds.setAttr(node + ".scale" + axis, 0.55)
+            secondary_nodes.extend(nodes)
+    return {
+        "active_path_visuals": active_nodes,
+        "secondary_path_visuals": secondary_nodes,
+    }
+
+
+def create_bee_task_selection_visuals(
+    bees,
+    tasks,
+    cells,
+    assignments,
+    cell_size,
+):
+    """Create matched bee/source/target markers for active Stage 4 tasks."""
     import maya.cmds as cmds
 
     group_name = _replace_empty_group(
         cmds,
         DEMO_VISUAL_GROUPS["bee_selections"],
     )
-    material = _create_maya_material(
-        cmds,
-        "chm_demo_bee_selected_MAT",
-        (0.10, 0.95, 1.0),
-    )
-    created = []
-    for index, bee in enumerate(bees):
-        if not bee.get("task_queue"):
-            continue
-        bee_object = bee.get("maya_object")
+    cell_by_id = {cell.get("id"): cell for cell in cells}
+    bee_by_id = {bee.get("id"): bee for bee in bees}
+    all_markers = []
+    bee_markers = []
+    source_markers = []
+    target_markers = []
+
+    for index, assignment in enumerate(assignments):
+        color = assignment["color"]
+        material = _create_maya_material(
+            cmds,
+            "chm_demo_active_task_{0:02d}_MAT".format(index),
+            color,
+        )
+        bee = bee_by_id.get(assignment.get("bee_id"), assignment.get("bee"))
+        bee_object = bee.get("maya_object") if bee else None
         if bee_object and cmds.objExists(bee_object):
             bounds = cmds.exactWorldBoundingBox(bee_object)
-            x = (bounds[0] + bounds[3]) * 0.5
-            y = bounds[4]
-            z = (bounds[2] + bounds[5]) * 0.5
+            bee_position = (
+                (bounds[0] + bounds[3]) * 0.5,
+                bounds[4] + 0.50,
+                (bounds[2] + bounds[5]) * 0.5,
+            )
         else:
-            x, y, z = bee.get("position", [0.0, 0.8, 0.0])
-        marker, _shape = cmds.polyCylinder(
-            radius=0.34,
-            height=0.045,
+            x, y, z = bee.get("position", [0.0, 0.8, 0.0]) if bee else (0, 0.8, 0)
+            bee_position = (x, y + 0.50, z)
+
+        bee_marker, _shape = cmds.polyCylinder(
+            radius=float(cell_size) * 0.42,
+            height=0.065,
             subdivisionsX=6,
-            name="CloudHive_bee_selected_{0:02d}".format(index),
+            name="CloudHive_active_bee_{0:02d}".format(index),
         )
-        cmds.xform(
-            marker,
-            translation=(x, y + 0.48, z),
-            worldSpace=True,
-        )
-        cmds.parent(marker, group_name)
-        _assign_maya_material(cmds, marker, material)
+        cmds.xform(bee_marker, translation=bee_position, worldSpace=True)
+        cmds.parent(bee_marker, group_name)
+        _assign_maya_material(cmds, bee_marker, material)
+        _set_demo_viewport_color(cmds, bee_marker, color)
         if bee_object and cmds.objExists(bee_object):
             cmds.pointConstraint(
                 bee_object,
-                marker,
+                bee_marker,
                 maintainOffset=True,
-                name="CloudHive_bee_selected_{0:02d}_pointConstraint".format(index),
+                name="CloudHive_active_bee_{0:02d}_pointConstraint".format(index),
             )
-        created.append(marker)
-    return created
+
+        source_cell = cell_by_id.get(assignment.get("source_cell"))
+        target_cell = cell_by_id.get(assignment.get("target_cell"))
+        source_marker = None
+        target_marker = None
+        if source_cell is not None:
+            x, y, z = source_cell["position"]
+            source_marker, _shape = cmds.polyCylinder(
+                radius=float(cell_size) * 0.34,
+                height=0.13,
+                subdivisionsX=6,
+                name="CloudHive_active_source_{0:02d}".format(index),
+            )
+            cmds.xform(
+                source_marker,
+                translation=(x, y + 0.82, z),
+                rotation=(0.0, 30.0, 0.0),
+                worldSpace=True,
+            )
+            cmds.parent(source_marker, group_name)
+            _assign_maya_material(cmds, source_marker, material)
+            _set_demo_viewport_color(cmds, source_marker, color)
+        if target_cell is not None:
+            x, y, z = target_cell["position"]
+            target_marker, _shape = cmds.polyTorus(
+                radius=float(cell_size) * 0.46,
+                sectionRadius=float(cell_size) * 0.055,
+                subdivisionsX=12,
+                subdivisionsY=4,
+                name="CloudHive_active_target_{0:02d}".format(index),
+            )
+            cmds.xform(target_marker, translation=(x, y + 0.86, z), worldSpace=True)
+            cmds.parent(target_marker, group_name)
+            _assign_maya_material(cmds, target_marker, material)
+            _set_demo_viewport_color(cmds, target_marker, color)
+
+        assignment["bee_marker"] = bee_marker
+        assignment["source_marker"] = source_marker
+        assignment["target_marker"] = target_marker
+        bee_markers.append(bee_marker)
+        if source_marker:
+            source_markers.append(source_marker)
+        if target_marker:
+            target_markers.append(target_marker)
+        all_markers.extend(
+            marker
+            for marker in (bee_marker, source_marker, target_marker)
+            if marker
+        )
+
+    return {
+        "assignments": assignments,
+        "all_markers": all_markers,
+        "bee_markers": bee_markers,
+        "source_markers": source_markers,
+        "target_markers": target_markers,
+    }
 
 
 def create_deposit_update_visuals(cells, resource_events, cell_size, collection_tasks=None):
@@ -1082,6 +1541,8 @@ def create_deposit_update_visuals(cells, resource_events, cell_size, collection_
         created.append(full_marker)
 
     for index, task in enumerate(collection_tasks or []):
+        if not task.get("demo_active"):
+            continue
         cell = cell_by_id.get(task.get("cloud_base_cell"))
         if cell is None:
             continue
@@ -1110,6 +1571,7 @@ def author_demo_stage_transitions(
     blocked_visuals,
     drop_demo_visuals,
     bee_selection_visuals,
+    transport_demo,
     collection_tasks,
     deposit_visuals,
     stage_ranges,
@@ -1177,7 +1639,22 @@ def author_demo_stage_transitions(
     stage_objects[3].extend(stage_three_nodes)
 
     stage_four_start, stage_four_end = stage_ranges[4]
-    _key_reveal_sequence(cmds, path_visuals, stage_four_start, stage_four_end)
+    active_path_nodes = list(transport_demo.get("active_path_visuals", []))
+    secondary_path_nodes = list(
+        transport_demo.get("secondary_path_visuals", [])
+    )
+    _key_reveal_sequence(
+        cmds,
+        active_path_nodes,
+        stage_four_start,
+        max(stage_four_start + 8, stage_four_end - 8),
+    )
+    _key_reveal_sequence(
+        cmds,
+        secondary_path_nodes,
+        min(stage_four_end - 6, stage_four_start + 16),
+        stage_four_end,
+    )
     _key_pop_sequence(
         cmds,
         bee_selection_visuals,
@@ -1185,10 +1662,9 @@ def author_demo_stage_transitions(
         stage_four_end,
         peak_scale=1.45,
     )
-    stage_four_crawl = _key_stage_four_bee_crawl(
+    stage_four_crawls = _key_stage_four_bee_crawls(
         cmds,
-        bees,
-        tasks,
+        transport_demo.get("assignments", []),
         cells,
         bee_base_transforms,
         stage_four_start,
@@ -1196,8 +1672,9 @@ def author_demo_stage_transitions(
         stage_ranges[5][0],
     )
     stage_objects[4].extend(list(path_visuals) + list(bee_selection_visuals))
-    if stage_four_crawl:
-        stage_objects[4].append(stage_four_crawl["bee_object"])
+    stage_objects[4].extend([
+        crawl["bee_object"] for crawl in stage_four_crawls
+    ])
 
     stage_five_start, stage_five_end = stage_ranges[5]
     trigger_nodes = _group_transform_children(
@@ -1294,7 +1771,28 @@ def author_demo_stage_transitions(
     return {
         "stage_objects": stage_objects,
         "keyed_object_count": sum(len(nodes) for nodes in stage_objects.values()),
-        "stage_four_crawl": stage_four_crawl,
+        "stage_four_crawl": stage_four_crawls[0] if stage_four_crawls else None,
+        "stage_four_crawls": stage_four_crawls,
+        "active_transport_task_ids": [
+            assignment.get("task_id")
+            for assignment in transport_demo.get("assignments", [])
+        ],
+        "queued_transport_task_ids": [
+            task.get("id")
+            for task in transport_demo.get("secondary_tasks", [])
+            if task.get("demo_transport_state") == "queued"
+        ],
+        "secondary_transport_task_ids": [
+            task.get("id")
+            for task in transport_demo.get("secondary_tasks", [])
+            if task.get("demo_transport_state") == "secondary"
+        ],
+        "active_collection_task_ids": [
+            task.get("id") for task in collection_tasks if task.get("demo_active")
+        ],
+        "queued_collection_task_ids": [
+            task.get("id") for task in collection_tasks if not task.get("demo_active")
+        ],
     }
 
 
@@ -1430,38 +1928,36 @@ def _key_bee_demo_holds(
         _key_translation(cmds, bee_object, stage_seven_end, final_position)
 
 
-def _key_stage_four_bee_crawl(
+def _key_stage_four_bee_crawls(
     cmds,
-    bees,
-    tasks,
+    assignments,
     cells,
     base_transforms,
     stage_start,
     stage_end,
     next_stage_start,
 ):
-    """Preview one assigned worker crawling along its BFS path in Stage 4."""
-    task_by_id = {task.get("id"): task for task in tasks}
+    """Preview unique assigned workers crawling on their own Stage 4 paths."""
     cell_by_id = {cell.get("id"): cell for cell in cells}
+    crawls = []
+    used_bee_ids = set()
+    used_bee_objects = set()
 
-    for bee in bees:
-        bee_object = bee.get("maya_object")
-        if not bee_object or not cmds.objExists(bee_object):
-            continue
-        task = next(
-            (
-                task_by_id.get(task_id)
-                for task_id in bee.get("task_queue", [])
-                if task_by_id.get(task_id)
-                and len(task_by_id[task_id].get("path") or []) > 1
-            ),
-            None,
-        )
-        if task is None:
+    for assignment_index, assignment in enumerate(assignments):
+        bee_id = assignment.get("bee_id")
+        bee_object = assignment.get("bee_object")
+        task = assignment.get("task") or {}
+        if (
+            not bee_id
+            or bee_id in used_bee_ids
+            or not bee_object
+            or bee_object in used_bee_objects
+            or not cmds.objExists(bee_object)
+        ):
             continue
 
         crawl_points = []
-        for cell_id in task.get("path", []):
+        for cell_id in assignment.get("path") or task.get("path", []):
             cell = cell_by_id.get(cell_id)
             if cell is None:
                 continue
@@ -1471,8 +1967,11 @@ def _key_stage_four_bee_crawl(
         if len(crawl_points) < 2:
             continue
 
-        base_position = base_transforms.get(bee.get("id"), crawl_points[0])
-        first_frame = int(stage_start) + 2
+        base_position = base_transforms.get(bee_id, crawl_points[0])
+        first_frame = min(
+            int(stage_end) - 4,
+            int(stage_start) + 2 + assignment_index * 3,
+        )
         last_frame = int(stage_end) - 2
         span = max(1, last_frame - first_frame)
         keyed_frames = []
@@ -1499,16 +1998,25 @@ def _key_stage_four_bee_crawl(
             )
         except RuntimeError:
             pass
-        return {
-            "bee_id": bee.get("id"),
+        crawl = {
+            "bee_id": bee_id,
             "bee_object": bee_object,
             "task_id": task.get("id"),
             "path": list(task.get("path", [])),
             "frames": keyed_frames,
             "movement_mode": "on_hive_transport",
+            "color": assignment.get("color"),
+            "bee_marker": assignment.get("bee_marker"),
+            "source_marker": assignment.get("source_marker"),
+            "target_marker": assignment.get("target_marker"),
         }
+        assignment["crawl_preview"] = crawl
+        task["demo_transport_frames"] = list(keyed_frames)
+        crawls.append(crawl)
+        used_bee_ids.add(bee_id)
+        used_bee_objects.add(bee_object)
 
-    return None
+    return crawls
 
 
 def _key_compact_resource_updates(

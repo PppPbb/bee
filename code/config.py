@@ -58,6 +58,8 @@ DEFAULT_INTEGRATION_PARAMETERS = {
         "drop_fall_frames": 64,
         "bee_frame_step": 22,
         "frame_duration_multiplier": 4.0,
+        # 0 disables the optional presentation cap and uses every available bee.
+        "demo_max_active_bees": 0,
         "show_paths": True,
         "render_background": True,
     },

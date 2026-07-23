@@ -14,6 +14,7 @@ PLAYBACK_ACTIVE = False
 PLAYBACK_JOB_ID = None
 PLAYBACK_SERIAL = 0
 PLAYBACK_END_FRAME = None
+CYCLE_AUTHORING_BUSY = False
 
 DEMO_STAGE_LABELS = {
     0: "Base Scene",
@@ -62,6 +63,7 @@ def _ensure_controls(cmds):
         "drop_fall_frames",
         "bee_frame_step",
         "show_paths",
+        "next_step",
         "status",
     )
     controls_are_valid = all(
@@ -157,6 +159,20 @@ def _set_status(cmds, label):
         cmds.text(CONTROLS["status"], edit=True, label=label)
 
 
+def _set_cycle_authoring_busy(cmds, is_busy):
+    """Lock or unlock cycle-boundary authoring without trapping the UI."""
+    global CYCLE_AUTHORING_BUSY
+
+    CYCLE_AUTHORING_BUSY = bool(is_busy)
+    next_control = CONTROLS.get("next_step")
+    try:
+        if next_control and cmds.control(next_control, exists=True):
+            cmds.button(next_control, edit=True, enable=not CYCLE_AUTHORING_BUSY)
+    except RuntimeError:
+        # The lock state must still be released if the window closes mid-build.
+        pass
+
+
 def _update_status(cmds):
     """Show a compact summary of the latest scene data."""
     if not LAST_SCENE_DATA:
@@ -177,7 +193,24 @@ def _update_status(cmds):
         summary.get("stored_nectar_total", 0.0),
         summary.get("stored_pollen_total", 0.0),
     )
-    if CURRENT_DEMO_STAGE == 5:
+    if CURRENT_DEMO_STAGE == 4:
+        transport_demo = LAST_SCENE_DATA.get("transport_demo", {})
+        active_count = len(transport_demo.get("assignments", []))
+        secondary_tasks = transport_demo.get("secondary_tasks", [])
+        queued_count = sum(
+            task.get("demo_transport_state") == "queued"
+            for task in secondary_tasks
+        )
+        secondary_count = len(secondary_tasks) - queued_count
+        label += (
+            "\n{0} active transport bees | {1} queued | "
+            "{2} secondary paths"
+        ).format(
+            active_count,
+            queued_count,
+            secondary_count,
+        )
+    elif CURRENT_DEMO_STAGE == 5:
         collection_check = LAST_SCENE_DATA.get("collection_check", {})
         needed = collection_check.get("needed_resources", [])
         if needed:
@@ -190,7 +223,11 @@ def _update_status(cmds):
                 demo_resource
             )
     elif CURRENT_DEMO_STAGE == 6:
-        label += "\nCloud collection transition"
+        collection_check = LAST_SCENE_DATA.get("collection_check", {})
+        label += "\nCloud collection: {0} active bees | {1} queued tasks".format(
+            collection_check.get("active_task_count", 0),
+            collection_check.get("queued_task_count", 0),
+        )
     _set_status(cmds, label)
 
 
@@ -390,8 +427,14 @@ def next_simulation_step(*_args):
     from visual_module import apply_demo_stage, create_maya_scene
 
     global LAST_SCENE_DATA, CURRENT_PARAMETERS, SIMULATION_STEP, CURRENT_DEMO_STAGE
-    global PLAYBACK_ACTIVE
+    global PLAYBACK_ACTIVE, CYCLE_AUTHORING_BUSY
     _ensure_controls(cmds)
+
+    if CYCLE_AUTHORING_BUSY:
+        message = "Preparing next cycle... Please wait."
+        _set_status(cmds, message)
+        print(message)
+        return LAST_SCENE_DATA
 
     if PLAYBACK_ACTIVE:
         is_running = True
@@ -415,26 +458,91 @@ def next_simulation_step(*_args):
         generate_from_ui()
 
     if CURRENT_DEMO_STAGE >= 7:
-        prior_cell_state = _capture_cell_state(LAST_SCENE_DATA)
-        SIMULATION_STEP += 1
-        CURRENT_PARAMETERS = copy.deepcopy(CURRENT_PARAMETERS)
-        CURRENT_PARAMETERS.setdefault("simulation", {})["cycle"] = SIMULATION_STEP
-        _set_status(
-            cmds,
-            "Cycle {0} | Preparing Stage 1 visuals...".format(SIMULATION_STEP),
-        )
-        cmds.refresh(force=True)
-        LAST_SCENE_DATA = _build_scene_without_viewport_scrub(
-            cmds,
-            create_maya_scene,
-            CURRENT_PARAMETERS,
-            prior_cell_state=prior_cell_state,
-        )
-        CURRENT_DEMO_STAGE = 1
+        prior_scene_data = LAST_SCENE_DATA
+        prior_parameters = CURRENT_PARAMETERS
+        prior_step = SIMULATION_STEP
+        prior_stage = CURRENT_DEMO_STAGE
+        prior_cell_state = _capture_cell_state(prior_scene_data)
+        next_step = prior_step + 1
+        next_parameters = copy.deepcopy(prior_parameters)
+        next_parameters.setdefault("simulation", {})["cycle"] = next_step
+        undo_chunk_open = False
+        scene_rollback_available = False
+
+        _set_cycle_authoring_busy(cmds, True)
+        try:
+            message = "Cycle {0} | Preparing next cycle...".format(next_step)
+            _set_status(cmds, message)
+            print(message)
+            cmds.refresh(force=True)
+            try:
+                scene_rollback_available = bool(
+                    cmds.undoInfo(query=True, state=True)
+                )
+                if scene_rollback_available:
+                    cmds.undoInfo(
+                        openChunk=True,
+                        chunkName="CloudHivePrepareNextCycle",
+                    )
+                    undo_chunk_open = True
+            except RuntimeError:
+                scene_rollback_available = False
+
+            next_scene_data = _build_scene_without_viewport_scrub(
+                cmds,
+                create_maya_scene,
+                next_parameters,
+                prior_cell_state=prior_cell_state,
+            )
+            next_stage = 1
+            stage_state = apply_demo_stage(next_scene_data, next_stage)
+
+            LAST_SCENE_DATA = next_scene_data
+            CURRENT_PARAMETERS = next_parameters
+            SIMULATION_STEP = next_step
+            CURRENT_DEMO_STAGE = next_stage
+        except Exception as error:
+            if undo_chunk_open:
+                try:
+                    cmds.undoInfo(closeChunk=True)
+                except RuntimeError:
+                    scene_rollback_available = False
+                finally:
+                    undo_chunk_open = False
+            if scene_rollback_available:
+                try:
+                    cmds.undo()
+                except RuntimeError:
+                    scene_rollback_available = False
+
+            LAST_SCENE_DATA = prior_scene_data
+            CURRENT_PARAMETERS = prior_parameters
+            SIMULATION_STEP = prior_step
+            CURRENT_DEMO_STAGE = prior_stage
+            message = (
+                "Could not prepare Cycle {0}; staying on Cycle {1}, Stage {2}: "
+                "{3}"
+            ).format(next_step, prior_step, prior_stage, error)
+            if not scene_rollback_available:
+                message += " Maya scene rollback was unavailable."
+            try:
+                _set_status(cmds, message)
+            except RuntimeError:
+                pass
+            try:
+                cmds.warning(message)
+            finally:
+                cmds.refresh(force=True)
+            return LAST_SCENE_DATA
+        finally:
+            try:
+                if undo_chunk_open:
+                    cmds.undoInfo(closeChunk=True)
+            finally:
+                _set_cycle_authoring_busy(cmds, False)
     else:
         CURRENT_DEMO_STAGE += 1
-
-    stage_state = apply_demo_stage(LAST_SCENE_DATA, CURRENT_DEMO_STAGE)
+        stage_state = apply_demo_stage(LAST_SCENE_DATA, CURRENT_DEMO_STAGE)
     _update_status(cmds)
 
     print("Stage {0} - {1}.".format(
@@ -666,7 +774,11 @@ def show_ui(initial_scene_data=None):
     cmds.button(label="Generate Scene", height=38, command=generate_from_ui)
     cmds.button(label="Clear Scene", height=32, command=clear_scene_from_ui)
     cmds.button(label="Run Pure Python Summary", height=32, command=run_pure_python_summary)
-    cmds.button(label="Next Simulation Step", height=32, command=next_simulation_step)
+    CONTROLS["next_step"] = cmds.button(
+        label="Next Simulation Step",
+        height=32,
+        command=next_simulation_step,
+    )
 
     cmds.rowLayout(numberOfColumns=3, adjustableColumn=1, columnWidth3=(135, 135, 135))
     cmds.button(label="Play", command=play_animation)

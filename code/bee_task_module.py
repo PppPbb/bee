@@ -1373,6 +1373,10 @@ def create_task_path_visuals(tasks, cells):
 
     for task in tasks:
         safe_task_id = _sanitize_maya_name_component(task.get("id", "task"))
+        task_path_objects = []
+        task["path_visual_objects"] = task_path_objects
+        task["path_curve_object"] = None
+        task["path_marker_objects"] = []
         points = []
         for cell_id in task.get("path", []):
             cell = cell_map.get(cell_id)
@@ -1399,6 +1403,8 @@ def create_task_path_visuals(tasks, cells):
                 cmds.setAttr(curve_shape + ".overrideRGBColors", 1)
                 cmds.setAttr(curve_shape + ".overrideColorRGB", 0.0, 0.95, 1.0)
             created_objects.append(curve)
+            task_path_objects.append(curve)
+            task["path_curve_object"] = curve
 
         for index, point in enumerate(points):
             marker, _shape = cmds.polySphere(
@@ -1415,6 +1421,8 @@ def create_task_path_visuals(tasks, cells):
                 point_material = marker_material
             _assign_maya_material(cmds, marker, point_material)
             created_objects.append(marker)
+            task_path_objects.append(marker)
+            task["path_marker_objects"].append(marker)
 
     return created_objects
 
