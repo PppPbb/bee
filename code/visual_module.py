@@ -69,6 +69,364 @@ DEMO_VISUAL_GROUPS = {
     "collection_visuals": "CloudHive_CollectionVisuals_GRP",
     "deposit_updates": "CloudHive_DepositUpdate_GRP",
 }
+DEMO_GUIDE_GROUP = "CloudHive_DemoGuide_GRP"
+DEMO_GUIDE_STAGE_GROUP = "CloudHive_StageIndicator_GRP"
+DEMO_GUIDE_LEGEND_GROUP = "CloudHive_Legend_GRP"
+DEMO_GUIDE_HINT_GROUP = "CloudHive_StageHint_GRP"
+DEMO_GUIDE_HUDS = {
+    "summary": "CloudHive_DemoGuide_Summary_HUD",
+    "hint": "CloudHive_DemoGuide_Hint_HUD",
+}
+LEGACY_DEMO_GUIDE_HUDS = (
+    "CloudHive_DemoGuide_Title_HUD",
+    "CloudHive_DemoGuide_Description_HUD",
+    "CloudHive_DemoGuide_Focus_HUD",
+    "CloudHive_DemoGuide_LegendTitle_HUD",
+    "CloudHive_DemoGuide_Resources_HUD",
+    "CloudHive_DemoGuide_Cells_HUD",
+    "CloudHive_DemoGuide_Restricted_HUD",
+    "CloudHive_DemoGuide_Tasks_HUD",
+    "CloudHive_DemoGuide_Paths_HUD",
+)
+DEMO_GUIDE_STAGE_CONTENT = {
+    0: {
+        "title": "Cloud-Hive Bloomfield",
+        "description": "Procedural honeycomb resource system",
+        "hint": "Click Next Simulation Step to begin.",
+        "focus": "Base: honeycomb | queen chamber | clouds | bees | storage",
+        "action": "The base hive, clouds, bees, and stored resources are prepared.",
+        "watch": "Locate the queen chamber, storage cells, clouds, and idle bees.",
+        "difference": "This is the neutral starting view before new resources appear.",
+    },
+    1: {
+        "title": "Stage 1 - Natural Resource Drop",
+        "description": "Cloud flowers randomly generate nectar and pollen.",
+        "hint": "New resources appear from cloud flowers.",
+        "focus": "GOLD / AMBER = nectar | ORANGE / PURPLE = pollen",
+        "action": "Cloud flowers release a new randomized set of resource drops.",
+        "watch": "Watch gold nectar and orange-purple pollen fall toward the hive.",
+        "difference": "New resource objects appear; mapping and validation are not shown yet.",
+    },
+    2: {
+        "title": "Stage 2 - Mapping & Validation",
+        "description": (
+            "Each drop maps to the nearest cell and is checked against its type."
+        ),
+        "hint": "Drops are mapped to nearby cells.",
+        "focus": "GREEN = matched | ORANGE = wrong type | RED = blocked",
+        "action": "Every drop is mapped to its nearest cell and validated by cell type.",
+        "watch": "Follow mapping lines and compare green, orange, and red cell markers.",
+        "difference": "The drop destinations and validation results are now revealed.",
+    },
+    3: {
+        "title": "Stage 3 - Storage or Task Creation",
+        "description": (
+            "Matched resources store directly; mismatched or blocked drops "
+            "create tasks."
+        ),
+        "hint": "Correct drops store directly; wrong drops become tasks.",
+        "focus": "DIRECT STORAGE | TRANSPORT TASK | CLEANUP TASK",
+        "action": "Valid drops store immediately; misplaced or blocked drops become tasks.",
+        "watch": "Compare direct-storage, blue transport, and red cleanup markers.",
+        "difference": "Validation results are converted into storage updates or queued work.",
+    },
+    4: {
+        "title": "Stage 4 - Bee Task Selection & BFS",
+        "description": (
+            "Bees select tasks and follow BFS paths to valid storage cells."
+        ),
+        "hint": "Bees crawl along shortest paths on the honeycomb.",
+        "focus": "ACTIVE BEE -> SOURCE CELL -> BFS PATH -> TARGET CELL",
+        "action": "Available bees select unique tasks and receive shortest BFS routes.",
+        "watch": "Match each active bee to its source, bright path, and target ring.",
+        "difference": "Task markers now become assigned bee movements on the hive surface.",
+    },
+    5: {
+        "title": "Stage 5 - Resource Check",
+        "description": (
+            "The system checks whether honey or pollen storage is insufficient."
+        ),
+        "hint": "Low storage triggers cloud collection.",
+        "focus": "RESOURCE CHECK -> LOW STORAGE -> COLLECTION TRIGGER",
+        "action": "Stored nectar and pollen totals are compared with collection thresholds.",
+        "watch": "Read the live totals and look for highlighted collection triggers.",
+        "difference": "The system pauses transport to decide whether outside collection is needed.",
+    },
+    6: {
+        "title": "Stage 6 - Cloud Collection",
+        "description": (
+            "Bees collect resources from cloud flowers when storage is low."
+        ),
+        "hint": "Bees fly only between the honeycomb and cloud flowers.",
+        "focus": "HIVE CRAWL -> CLOUD FLIGHT -> COLLECT -> HIVE RE-ENTRY",
+        "action": "Collection bees crawl to cloud-base cells, fly up, collect, and return.",
+        "watch": "Separate the on-hive crawl from the vertical cloud-flight segment.",
+        "difference": "Stage 5 only requested collection; Stage 6 performs the movement.",
+    },
+    7: {
+        "title": "Stage 7 - Deposit & Storage Update",
+        "description": (
+            "Resources are deposited and storage updates for the next cycle."
+        ),
+        "hint": "Updated storage is ready for the next cycle.",
+        "focus": "DEPOSIT -> STORAGE UPDATE -> NEXT CYCLE READY",
+        "action": "Delivered resources update cell storage and capacity state.",
+        "watch": "Look for destination-cell flashes, changed resource levels, and full cells.",
+        "difference": "Movement is complete and persistent state is ready for the next cycle.",
+    },
+}
+DEMO_GUIDE_LEGEND_LINES = (
+    (
+        "Resources | Nectar = GOLD / AMBER drop | "
+        "Pollen = ORANGE / PURPLE grains"
+    ),
+    "Cells | Honey stores nectar | Pollen stores pollen | Empty is available",
+    "Restricted | Capped is blocked | Queen chamber is reserved",
+    "Tasks | Collection = cloud | Transport = relocate | Cleanup = invalid",
+    "BFS | Bright path + ring = active bee | Muted path = queued task",
+)
+DEMO_GUIDE_LEGEND_ITEMS = (
+    {
+        "key": "nectar_drop",
+        "label": "Nectar drop",
+        "detail": "Gold sphere falling from a cloud",
+        "color": (1.00, 0.64, 0.05),
+        "icon_kind": "nectar_sphere",
+    },
+    {
+        "key": "pollen_drop",
+        "label": "Pollen drop",
+        "detail": "Orange sphere falling from a cloud",
+        "color": (1.00, 0.48, 0.05),
+        "accent_color": (0.72, 0.20, 1.00),
+        "icon_kind": "pollen_sphere",
+    },
+    {
+        "key": "honey_cell",
+        "label": "Honey storage cell",
+        "detail": "Gold hexagon stores nectar",
+        "color": (1.00, 0.55, 0.08),
+        "icon_kind": "hex_fill",
+    },
+    {
+        "key": "pollen_cell",
+        "label": "Pollen storage cell",
+        "detail": "Grained hexagon stores pollen",
+        "color": (0.95, 0.48, 0.08),
+        "accent_color": (1.00, 0.78, 0.12),
+        "icon_kind": "hex_grains",
+    },
+    {
+        "key": "empty_cell",
+        "label": "Empty / available cell",
+        "detail": "Cream hexagon available for storage",
+        "color": (0.82, 0.78, 0.62),
+        "icon_kind": "hex_outline",
+    },
+    {
+        "key": "capped_cell",
+        "label": "Capped / blocked cell",
+        "detail": "Cream capped hexagon cannot accept resources",
+        "color": (0.95, 0.86, 0.58),
+        "accent_color": (0.55, 0.36, 0.18),
+        "icon_kind": "hex_capped",
+    },
+    {
+        "key": "queen_chamber",
+        "label": "Queen chamber",
+        "detail": "Large amber hexagon is reserved",
+        "color": (0.64, 0.39, 0.10),
+        "accent_color": (1.00, 0.79, 0.25),
+        "icon_kind": "hex_queen",
+    },
+    {
+        "key": "idle_bee",
+        "label": "Bee",
+        "detail": "Available worker on the honeycomb",
+        "color": (1.00, 0.82, 0.15),
+        "accent_color": (0.22, 0.16, 0.06),
+        "icon_kind": "bee",
+    },
+    {
+        "key": "mapping_line",
+        "label": "Drop mapping line",
+        "detail": "Cyan line links a drop to its nearest cell",
+        "color": (0.10, 0.78, 1.00),
+        "icon_kind": "line_mapping",
+    },
+    {
+        "key": "validation_matched",
+        "label": "Matched cell",
+        "detail": "Green hexagon accepts the resource directly",
+        "color": (0.12, 1.00, 0.30),
+        "icon_kind": "hex_matched",
+    },
+    {
+        "key": "validation_wrong",
+        "label": "Wrong storage type",
+        "detail": "Orange hexagon creates a transport task",
+        "color": (1.00, 0.42, 0.04),
+        "icon_kind": "hex_warning",
+    },
+    {
+        "key": "validation_blocked",
+        "label": "Blocked landing",
+        "detail": "Red crossed hexagon creates a cleanup task",
+        "color": (1.00, 0.04, 0.10),
+        "icon_kind": "hex_blocked",
+    },
+    {
+        "key": "validation_unmapped",
+        "label": "Unmapped drop",
+        "detail": "Gray marker has no valid landing cell",
+        "color": (0.45, 0.45, 0.50),
+        "icon_kind": "hex_unknown",
+    },
+    {
+        "key": "direct_storage",
+        "label": "Direct storage",
+        "detail": "Gold resource enters a matching hexagon",
+        "color": (1.00, 0.82, 0.08),
+        "icon_kind": "direct_storage",
+    },
+    {
+        "key": "transport_task",
+        "label": "Transport task",
+        "detail": "Blue marker relocates a misplaced resource",
+        "color": (0.10, 0.42, 1.00),
+        "icon_kind": "task_transport",
+    },
+    {
+        "key": "cleanup_task",
+        "label": "Cleanup task",
+        "detail": "Red crossed marker handles an invalid drop",
+        "color": (1.00, 0.08, 0.08),
+        "icon_kind": "task_cleanup",
+    },
+    {
+        "key": "active_transport_bees",
+        "label": "Active transport bees",
+        "detail": "Selected workers crawl on the honeycomb",
+        "color": (1.00, 0.76, 0.16),
+        "accent_color": (0.72, 0.24, 1.00),
+        "icon_kind": "bee_active",
+    },
+    {
+        "key": "task_endpoints",
+        "label": "Source and target cells",
+        "detail": "Colored source hexagon points to a target ring",
+        "color": (1.00, 0.68, 0.10),
+        "accent_color": (0.72, 0.24, 1.00),
+        "icon_kind": "source_target",
+    },
+    {
+        "key": "active_bfs_routes",
+        "label": "Active BFS routes",
+        "detail": "Bright task-colored lines match moving bees",
+        "color": (1.00, 0.62, 0.04),
+        "accent_color": (0.72, 0.24, 1.00),
+        "icon_kind": "line_active_route",
+    },
+    {
+        "key": "queued_bfs_routes",
+        "label": "Queued BFS routes",
+        "detail": "Muted dashed lines wait for an available bee",
+        "color": (0.20, 0.34, 0.44),
+        "icon_kind": "line_queued",
+    },
+    {
+        "key": "nectar_collection_trigger",
+        "label": "Nectar collection trigger",
+        "detail": "Gold halo marks a nectar cloud source",
+        "color": (1.00, 0.72, 0.05),
+        "icon_kind": "collection_trigger",
+    },
+    {
+        "key": "pollen_collection_trigger",
+        "label": "Pollen collection trigger",
+        "detail": "Purple halo marks a pollen cloud source",
+        "color": (0.72, 0.20, 1.00),
+        "accent_color": (1.00, 0.30, 0.05),
+        "icon_kind": "collection_trigger",
+    },
+    {
+        "key": "queued_collection",
+        "label": "Queued collection",
+        "detail": "Muted cloud task waits for an available bee",
+        "color": (0.42, 0.32, 0.48),
+        "icon_kind": "collection_queued",
+    },
+    {
+        "key": "active_collection_bees",
+        "label": "Active collection bees",
+        "detail": "Selected workers perform cloud collection",
+        "color": (1.00, 0.76, 0.16),
+        "accent_color": (0.72, 0.20, 1.00),
+        "icon_kind": "bee_active",
+    },
+    {
+        "key": "hive_crawl",
+        "label": "Honeycomb crawl",
+        "detail": "Mint line is on-hive movement",
+        "color": (0.15, 0.95, 0.72),
+        "icon_kind": "line_crawl",
+    },
+    {
+        "key": "cloud_flight",
+        "label": "Cloud flight",
+        "detail": "Magenta rising line is the flying segment",
+        "color": (0.95, 0.30, 1.00),
+        "icon_kind": "line_flight",
+    },
+    {
+        "key": "nectar_payload",
+        "label": "Collected nectar",
+        "detail": "Gold droplet carried by a bee",
+        "color": (1.00, 0.72, 0.05),
+        "icon_kind": "nectar_droplet",
+    },
+    {
+        "key": "pollen_payload",
+        "label": "Collected pollen",
+        "detail": "Orange-purple grain cluster carried by a bee",
+        "color": (1.00, 0.30, 0.05),
+        "accent_color": (0.72, 0.20, 1.00),
+        "icon_kind": "pollen_cluster",
+    },
+    {
+        "key": "nectar_deposit",
+        "label": "Nectar deposit",
+        "detail": "Gold marker updates nectar storage",
+        "color": (1.00, 0.72, 0.04),
+        "icon_kind": "deposit_hex",
+    },
+    {
+        "key": "pollen_deposit",
+        "label": "Pollen deposit",
+        "detail": "Orange grains update pollen storage",
+        "color": (1.00, 0.28, 0.04),
+        "accent_color": (1.00, 0.72, 0.08),
+        "icon_kind": "deposit_grains",
+    },
+    {
+        "key": "full_storage",
+        "label": "Full storage cell",
+        "detail": "Cream filled hexagon has reached capacity",
+        "color": (0.95, 0.88, 0.68),
+        "accent_color": (0.62, 0.42, 0.16),
+        "icon_kind": "hex_full",
+    },
+    {
+        "key": "collection_reentry",
+        "label": "Hive re-entry",
+        "detail": "Purple ring marks a collection return point",
+        "color": (0.72, 0.30, 1.00),
+        "icon_kind": "reentry",
+    },
+)
+DEMO_GUIDE_LEGEND_CATALOG = {
+    item["key"]: item for item in DEMO_GUIDE_LEGEND_ITEMS
+}
 
 
 def _resolve_demo_active_bee_limit(task_count, bee_count, optional_cap=None):
@@ -85,6 +443,450 @@ def _resolve_demo_active_bee_limit(task_count, bee_count, optional_cap=None):
     return active_limit
 
 
+def _demo_legend_item(item_key, **overrides):
+    """Return a detached, normalized legend item from the shared catalog."""
+    item = dict(DEMO_GUIDE_LEGEND_CATALOG[item_key])
+    item.update(overrides)
+    item["color"] = tuple(float(value) for value in item["color"])
+    if item.get("accent_color") is not None:
+        item["accent_color"] = tuple(
+            float(value) for value in item["accent_color"]
+        )
+    item["animated"] = bool(item.get("animated", False))
+    normalized_ranges = []
+    for frame_range in item.get("pulse_ranges", []) or []:
+        if not frame_range or len(frame_range) < 2:
+            continue
+        try:
+            start_frame = int(round(float(frame_range[0])))
+            end_frame = int(round(float(frame_range[1])))
+        except (TypeError, ValueError):
+            continue
+        normalized_ranges.append((
+            max(1, start_frame),
+            max(max(1, start_frame), end_frame),
+        ))
+    item["pulse_ranges"] = normalized_ranges
+    return item
+
+
+def _demo_stage_frame_range(scene_data, stage):
+    """Return a safe frame range for guide pulse metadata."""
+    frame_range = (scene_data or {}).get("demo_playback_ranges", {}).get(
+        int(stage),
+        (1, 2),
+    )
+    try:
+        start_frame = max(1, int(round(float(frame_range[0]))))
+        end_frame = max(start_frame + 1, int(round(float(frame_range[1]))))
+    except (TypeError, ValueError, IndexError):
+        start_frame, end_frame = 1, 2
+    return start_frame, end_frame
+
+
+def _demo_task_frame_ranges(tasks, segment_names=None):
+    """Collect valid animation or named movement ranges from active tasks."""
+    ranges = []
+    for task in tasks:
+        if not task.get("demo_active"):
+            continue
+        if segment_names:
+            segments = task.get("movement_segments", {})
+            for segment_name in segment_names:
+                frame_range = segments.get(segment_name)
+                if frame_range and len(frame_range) >= 2:
+                    ranges.append(frame_range)
+            continue
+        start_frame = task.get("animation_start_frame")
+        end_frame = task.get("animation_end_frame")
+        if start_frame is not None and end_frame is not None:
+            ranges.append((start_frame, end_frame))
+    return ranges
+
+
+def build_demo_stage_legend(scene_data, stage):
+    """Return only the guide symbols that exist in one prepared stage.
+
+    The returned list is pure data. Maya UI code can rebuild the small legend
+    region from these records without touching the scene or stage state.
+    """
+    if not scene_data:
+        return []
+
+    safe_stage = max(0, min(7, int(stage)))
+    active_scene = scene_data
+    cells = active_scene.get("cells", [])
+    drops = active_scene.get("drops", [])
+    tasks = active_scene.get("tasks", [])
+    outcomes = active_scene.get("drop_demo_visuals", {}).get("outcomes", [])
+    drop_visuals = active_scene.get("drop_demo_visuals", {})
+    transport_demo = active_scene.get("transport_demo", {})
+    collection_tasks = active_scene.get("collection_tasks", [])
+    resource_events = active_scene.get("resource_events", [])
+    summary = active_scene.get("summary", {})
+    stage_range = _demo_stage_frame_range(active_scene, safe_stage)
+    legend = []
+    used_keys = set()
+
+    drop_resource_types = {
+        str(drop.get("resource_type"))
+        for drop in drops
+        if drop.get("resource_type") in ("nectar", "pollen")
+    }
+    collection_resource_types = {
+        str(task.get("resource_type"))
+        for task in collection_tasks
+        if task.get("resource_type") in ("nectar", "pollen")
+    }
+    active_collection_tasks = [
+        task for task in collection_tasks if task.get("demo_active")
+    ]
+    active_collection_resource_types = {
+        str(task.get("resource_type"))
+        for task in active_collection_tasks
+        if task.get("resource_type") in ("nectar", "pollen")
+    }
+
+    def add(item_key, condition=True, **overrides):
+        if not condition or item_key in used_keys:
+            return
+        if overrides.get("animated") and not overrides.get("pulse_ranges"):
+            overrides["pulse_ranges"] = [stage_range]
+        legend.append(_demo_legend_item(item_key, **overrides))
+        used_keys.add(item_key)
+
+    if safe_stage == 0:
+        cell_types = {str(cell.get("type", "")) for cell in cells}
+        has_honey = "honey" in cell_types or any(
+            float(cell.get("nectar", 0.0)) > 0.000001 for cell in cells
+        )
+        has_pollen = "pollen" in cell_types or any(
+            float(cell.get("pollen", 0.0)) > 0.000001 for cell in cells
+        )
+        has_capped = "capped" in cell_types or any(
+            cell.get("is_blocked")
+            and cell.get("type") not in ("queen", "queen_reserved")
+            for cell in cells
+        )
+        has_queen = bool(
+            {"queen", "queen_reserved"}.intersection(cell_types)
+        ) or any(cell.get("queen_role") for cell in cells)
+        add("honey_cell", has_honey)
+        add("pollen_cell", has_pollen)
+        add("empty_cell", "empty" in cell_types)
+        add("capped_cell", has_capped)
+        add("queen_chamber", has_queen)
+        add("idle_bee", bool(active_scene.get("bees")))
+
+    elif safe_stage == 1:
+        for resource_type in ("nectar", "pollen"):
+            resource_drops = [
+                drop for drop in drops
+                if drop.get("resource_type") == resource_type
+            ]
+            pulse_ranges = [
+                (
+                    drop.get(
+                        "demo_transition_start",
+                        drop.get("animation_start_frame", stage_range[0]),
+                    ),
+                    drop.get(
+                        "demo_transition_end",
+                        drop.get("animation_end_frame", stage_range[1]),
+                    ),
+                )
+                for drop in resource_drops
+            ]
+            add(
+                "{0}_drop".format(resource_type),
+                bool(resource_drops),
+                animated=True,
+                pulse_ranges=pulse_ranges,
+            )
+
+    elif safe_stage == 2:
+        add("nectar_drop", "nectar" in drop_resource_types)
+        add("pollen_drop", "pollen" in drop_resource_types)
+        mapping_nodes = drop_visuals.get("mapping", [])
+        add(
+            "mapping_line",
+            bool(mapping_nodes or outcomes),
+            animated=True,
+        )
+        validation_results = {
+            str(outcome.get("validation", "unmapped"))
+            for outcome in outcomes
+        }
+        add(
+            "validation_matched",
+            "matched" in validation_results,
+            animated=True,
+        )
+        add(
+            "validation_wrong",
+            "mismatched" in validation_results,
+            animated=True,
+        )
+        add(
+            "validation_blocked",
+            "blocked" in validation_results,
+            animated=True,
+        )
+        add(
+            "validation_unmapped",
+            "unmapped" in validation_results,
+            animated=True,
+        )
+
+    elif safe_stage == 3:
+        direct_count = sum(
+            float(outcome.get("direct_storage_amount", 0.0)) > 0.000001
+            for outcome in outcomes
+        )
+        transport_count = sum(
+            str(task.get("type", "")).startswith("transport_")
+            for task in tasks
+        )
+        cleanup_count = sum(
+            task.get("type") == "clean_blocked" for task in tasks
+        )
+        add(
+            "direct_storage",
+            direct_count > 0,
+            label="Direct storage  x{0}".format(direct_count),
+            animated=True,
+        )
+        add(
+            "transport_task",
+            transport_count > 0,
+            label="Transport tasks  x{0}".format(transport_count),
+            animated=True,
+        )
+        add(
+            "cleanup_task",
+            cleanup_count > 0,
+            label="Cleanup tasks  x{0}".format(cleanup_count),
+            animated=True,
+        )
+
+    elif safe_stage == 4:
+        assignments = transport_demo.get("assignments", [])
+        active_path_nodes = transport_demo.get("active_path_visuals", [])
+        secondary_tasks = transport_demo.get("secondary_tasks", [])
+        secondary_path_nodes = transport_demo.get(
+            "secondary_path_visuals",
+            [],
+        )
+        timing = active_scene.get("transition_visuals", {}).get(
+            "stage_four_timing",
+            {},
+        )
+        movement_frames = timing.get("active_bee_final_movement_frames", [])
+        movement_end = max(
+            [stage_range[0] + 1]
+            + [
+                int(frame)
+                for frame in movement_frames
+                if frame is not None
+            ]
+        )
+        movement_range = (stage_range[0], min(stage_range[1], movement_end))
+        add(
+            "active_transport_bees",
+            bool(assignments),
+            label="Active transport bees  x{0}".format(len(assignments)),
+            animated=True,
+            pulse_ranges=[movement_range],
+        )
+        add(
+            "task_endpoints",
+            bool(
+                transport_demo.get("source_markers")
+                or transport_demo.get("target_markers")
+            ),
+            label="Source -> target pairs  x{0}".format(len(assignments)),
+            animated=True,
+        )
+        add(
+            "active_bfs_routes",
+            bool(assignments and active_path_nodes),
+            label="Active BFS routes  x{0}".format(len(assignments)),
+            animated=True,
+            pulse_ranges=[movement_range],
+        )
+        add(
+            "queued_bfs_routes",
+            bool(secondary_tasks and secondary_path_nodes),
+            label="Queued / secondary routes  x{0}".format(
+                len(secondary_tasks)
+            ),
+        )
+        transport_count = sum(
+            str(task.get("type", "")).startswith("transport_")
+            for task in tasks
+        )
+        cleanup_count = sum(
+            task.get("type") == "clean_blocked" for task in tasks
+        )
+        add(
+            "transport_task",
+            transport_count > 0,
+            label="Transport task markers  x{0}".format(transport_count),
+        )
+        add(
+            "cleanup_task",
+            cleanup_count > 0,
+            label="Cleanup task markers  x{0}".format(cleanup_count),
+        )
+
+    elif safe_stage == 5:
+        collection_check = active_scene.get("collection_check", {})
+        needed_resources = set(
+            collection_check.get("needed_resources", [])
+        )
+        presentation_resource = collection_check.get("presentation_resource")
+        presentation_only = not needed_resources
+        for resource_type in ("nectar", "pollen"):
+            resource_tasks = [
+                task for task in collection_tasks
+                if task.get("resource_type") == resource_type
+            ]
+            if not resource_tasks:
+                continue
+            if presentation_only:
+                detail = (
+                    "Storage is sufficient; this cloud marker previews "
+                    "the collection pathway"
+                )
+            else:
+                detail = (
+                    "Low {0} storage selects this cloud source"
+                ).format(resource_type)
+            add(
+                "{0}_collection_trigger".format(resource_type),
+                resource_type in collection_resource_types
+                and (
+                    resource_type in needed_resources
+                    or resource_type == presentation_resource
+                ),
+                label=(
+                    "{0} demo trigger".format(resource_type.title())
+                    if presentation_only
+                    else "{0} collection trigger".format(
+                        resource_type.title()
+                    )
+                ),
+                detail=detail,
+                animated=True,
+            )
+        queued_count = sum(
+            not task.get("demo_active") for task in collection_tasks
+        )
+        add(
+            "queued_collection",
+            queued_count > 0,
+            label="Queued collection tasks  x{0}".format(queued_count),
+        )
+
+    elif safe_stage == 6:
+        active_count = len(active_collection_tasks)
+        active_ranges = _demo_task_frame_ranges(active_collection_tasks)
+        crawl_ranges = _demo_task_frame_ranges(
+            active_collection_tasks,
+            ("on_hive",),
+        )
+        flight_ranges = _demo_task_frame_ranges(
+            active_collection_tasks,
+            ("cloud_flight", "on_hive_reentry"),
+        )
+        add(
+            "active_collection_bees",
+            active_count > 0,
+            label="Active collection bees  x{0}".format(active_count),
+            animated=True,
+            pulse_ranges=active_ranges,
+        )
+        add(
+            "hive_crawl",
+            any(task.get("crawl_curve_object") for task in active_collection_tasks),
+            animated=True,
+            pulse_ranges=crawl_ranges,
+        )
+        add(
+            "cloud_flight",
+            any(task.get("flight_curve_object") for task in active_collection_tasks),
+            animated=True,
+            pulse_ranges=flight_ranges,
+        )
+        for resource_type in ("nectar", "pollen"):
+            payload_ranges = [
+                (task.get("collection_frame"), task.get("reentry_frame"))
+                for task in active_collection_tasks
+                if task.get("resource_type") == resource_type
+            ]
+            add(
+                "{0}_payload".format(resource_type),
+                resource_type in active_collection_resource_types,
+                animated=True,
+                pulse_ranges=payload_ranges,
+            )
+        queued_count = sum(
+            not task.get("demo_active") for task in collection_tasks
+        )
+        add(
+            "queued_collection",
+            queued_count > 0,
+            label="Queued collection tasks  x{0}".format(queued_count),
+        )
+
+    elif safe_stage == 7:
+        deposited_resources = {
+            str(event.get("resource_type"))
+            for event in resource_events
+            if event.get("resource_type") in ("nectar", "pollen")
+            and float(event.get("amount", 0.0)) > 0.000001
+        }
+        add(
+            "nectar_deposit",
+            "nectar" in deposited_resources,
+            animated=True,
+        )
+        add(
+            "pollen_deposit",
+            "pollen" in deposited_resources,
+            animated=True,
+        )
+        full_count = int(summary.get("full_storage_cell_count", 0))
+        if not full_count:
+            full_count = sum(
+                bool(cell.get("blocked_by_capacity")) for cell in cells
+            )
+        add(
+            "full_storage",
+            full_count > 0,
+            label="Full storage cells  x{0}".format(full_count),
+            animated=True,
+        )
+        add(
+            "collection_reentry",
+            bool(active_collection_tasks),
+            label="Collection re-entry points  x{0}".format(
+                len(active_collection_tasks)
+            ),
+            animated=True,
+        )
+        cleanup_count = sum(
+            task.get("type") == "clean_blocked" for task in tasks
+        )
+        add(
+            "cleanup_task",
+            cleanup_count > 0,
+            label="Cleanup task markers  x{0}".format(cleanup_count),
+        )
+
+    return legend
+
+
 def _maya_safe_name_component(value):
     """Return a Maya-safe node-name component without changing data ids."""
     safe_value = "".join(
@@ -96,6 +898,514 @@ def _maya_safe_name_component(value):
     if safe_value[0].isdigit():
         return "n_{0}".format(safe_value)
     return safe_value
+
+
+def build_demo_guide_text(scene_data, stage):
+    """Return concise presentation text for one prepared demo stage.
+
+    This helper is intentionally pure Python so guide copy and scene-specific
+    counts can be checked without importing Maya.
+    """
+    safe_stage = max(0, min(7, int(stage)))
+    content = dict(DEMO_GUIDE_STAGE_CONTENT[safe_stage])
+    active_scene = scene_data or {}
+    summary = active_scene.get("summary", {})
+    cycle_number = int(summary.get("cycle_number", 0))
+
+    if safe_stage == 3:
+        outcomes = active_scene.get("drop_demo_visuals", {}).get("outcomes", [])
+        direct_count = sum(
+            float(outcome.get("direct_storage_amount", 0.0)) > 0.000001
+            for outcome in outcomes
+        )
+        transport_count = sum(
+            str(outcome.get("task_type", "")).startswith("transport_")
+            for outcome in outcomes
+        )
+        cleanup_count = sum(
+            outcome.get("task_type") == "clean_blocked"
+            for outcome in outcomes
+        )
+        content["focus"] = (
+            "Cycle {0} | DIRECT {1} | TRANSPORT {2} | CLEANUP {3}"
+        ).format(
+            cycle_number,
+            direct_count,
+            transport_count,
+            cleanup_count,
+        )
+    elif safe_stage == 4:
+        transport_demo = active_scene.get("transport_demo", {})
+        active_count = len(transport_demo.get("assignments", []))
+        waiting_count = len(transport_demo.get("secondary_tasks", []))
+        content["focus"] = (
+            "Cycle {0} | ACTIVE BEES {1} -> SOURCE -> BFS -> TARGET | "
+            "WAITING {2}"
+        ).format(cycle_number, active_count, waiting_count)
+    elif safe_stage == 5:
+        collection_check = active_scene.get("collection_check", {})
+        totals = collection_check.get("totals", {})
+        thresholds = collection_check.get("thresholds", {})
+        needed = collection_check.get("needed_resources", [])
+        trigger = (
+            "LOW: {0}".format(" + ".join(item.upper() for item in needed))
+            if needed
+            else "NO SHORTAGE - DEMO COLLECTION PREVIEW"
+        )
+        content["focus"] = (
+            "Cycle {0} | Nectar {1:.2f}/{2:.2f} | "
+            "Pollen {3:.2f}/{4:.2f} | {5}"
+        ).format(
+            cycle_number,
+            float(totals.get("nectar", 0.0)),
+            float(thresholds.get("nectar", 0.0)),
+            float(totals.get("pollen", 0.0)),
+            float(thresholds.get("pollen", 0.0)),
+            trigger,
+        )
+    elif safe_stage == 6:
+        collection_tasks = active_scene.get("collection_tasks", [])
+        active_tasks = [
+            task for task in collection_tasks if task.get("demo_active")
+        ]
+        resource_types = sorted({
+            str(task.get("resource_type", "")).upper()
+            for task in active_tasks
+            if task.get("resource_type")
+        })
+        content["focus"] = (
+            "Cycle {0} | ACTIVE COLLECTION BEES {1} | {2} | "
+            "HIVE CRAWL -> CLOUD FLIGHT -> RETURN"
+        ).format(
+            cycle_number,
+            len(active_tasks),
+            " + ".join(resource_types) if resource_types else "NO COLLECTION",
+        )
+    elif safe_stage == 7:
+        content["focus"] = (
+            "Cycle {0} | STORED NECTAR {1:.2f} | STORED POLLEN {2:.2f} | "
+            "FULL CELLS {3}"
+        ).format(
+            cycle_number,
+            float(summary.get("stored_nectar_total", 0.0)),
+            float(summary.get("stored_pollen_total", 0.0)),
+            int(summary.get("full_storage_cell_count", 0)),
+        )
+    else:
+        content["focus"] = "Cycle {0} | {1}".format(
+            cycle_number,
+            content["focus"],
+        )
+
+    content["stage"] = safe_stage
+    return content
+
+
+def build_demo_guide_panel_data(scene_data, stage):
+    """Build pure presentation data for the separate Demo Guide Panel."""
+    safe_stage = max(0, min(7, int(stage)))
+    active_scene = scene_data or {}
+    text = build_demo_guide_text(active_scene, safe_stage)
+    summary = active_scene.get("summary", {})
+    outcomes = active_scene.get("drop_demo_visuals", {}).get("outcomes", [])
+    tasks = active_scene.get("tasks", [])
+    collection_tasks = active_scene.get("collection_tasks", [])
+    transport_demo = active_scene.get("transport_demo", {})
+
+    direct_storage_count = sum(
+        float(outcome.get("direct_storage_amount", 0.0)) > 0.000001
+        for outcome in outcomes
+    )
+    transport_task_count = sum(
+        str(task.get("type", "")).startswith("transport_")
+        for task in tasks
+    )
+    cleanup_task_count = sum(
+        task.get("type") == "clean_blocked"
+        for task in tasks
+    )
+    active_transport_count = len(transport_demo.get("assignments", []))
+    active_collection_count = sum(
+        bool(task.get("demo_active"))
+        for task in collection_tasks
+    )
+    if safe_stage == 4:
+        active_bee_count = active_transport_count
+        queued_task_count = len(transport_demo.get("secondary_tasks", []))
+    elif safe_stage == 6:
+        active_bee_count = active_collection_count
+        queued_task_count = len(collection_tasks) - active_collection_count
+    else:
+        active_bee_count = 0
+        queued_task_count = int(summary.get("queued_task_count", 0))
+
+    cycle_number = int(summary.get("cycle_number", 0))
+    legend_items = build_demo_stage_legend(scene_data, safe_stage)
+    return {
+        "has_scene": bool(scene_data),
+        "cycle": cycle_number,
+        "stage": safe_stage,
+        "stage_name": DEMO_STAGE_LABELS[safe_stage],
+        "stage_title": text["title"],
+        "description": text["description"],
+        "hint": text["hint"],
+        "focus": text["focus"],
+        "action": text["action"],
+        "watch": text["watch"],
+        "difference": text["difference"],
+        "hud_summary": "Cycle {0} | Stage {1} - {2}".format(
+            cycle_number,
+            safe_stage,
+            DEMO_STAGE_LABELS[safe_stage],
+        ),
+        "legend": legend_items,
+        "legend_active_keys": [
+            item["key"] for item in legend_items if item.get("animated")
+        ],
+        "status": {
+            "new_drops": int(summary.get(
+                "drop_count",
+                len(active_scene.get("drops", [])),
+            )),
+            "direct_storage": int(direct_storage_count),
+            "transport_tasks": int(transport_task_count),
+            "cleanup_tasks": int(cleanup_task_count),
+            "collection_tasks": int(len(collection_tasks)),
+            "active_bees": int(active_bee_count),
+            "queued_tasks": int(queued_task_count),
+            "stored_nectar": float(summary.get("stored_nectar_total", 0.0)),
+            "stored_pollen": float(summary.get("stored_pollen_total", 0.0)),
+        },
+    }
+
+
+def _remove_demo_guide_huds(cmds, hud_names=None):
+    """Remove only Cloud-Hive guide HUD entries."""
+    names = hud_names or tuple(DEMO_GUIDE_HUDS.values()) + LEGACY_DEMO_GUIDE_HUDS
+    for hud_name in names:
+        try:
+            if cmds.headsUpDisplay(hud_name, exists=True):
+                cmds.headsUpDisplay(hud_name, remove=True)
+        except RuntimeError:
+            pass
+
+
+def _upsert_demo_guide_hud(
+    cmds,
+    hud_name,
+    section,
+    block,
+    label,
+    font_size="small",
+    block_size="small",
+    label_width=480,
+):
+    """Create or update one screen-anchored, playblast-visible HUD line."""
+    if cmds.headsUpDisplay(hud_name, exists=True):
+        cmds.headsUpDisplay(hud_name, edit=True, label=str(label))
+        return hud_name
+
+    options = {
+        "section": int(section),
+        "block": int(block),
+        "label": str(label),
+        "labelFontSize": font_size,
+        "blockSize": block_size,
+        "labelWidth": int(label_width),
+        "allowOverlap": True,
+    }
+    try:
+        cmds.headsUpDisplay(hud_name, **options)
+    except RuntimeError:
+        free_block = cmds.headsUpDisplay(nextFreeBlock=int(section))
+        options["block"] = int(free_block)
+        cmds.headsUpDisplay(hud_name, **options)
+    return hud_name
+
+
+def _set_demo_guide_attribute(cmds, node, attribute, value, value_type):
+    """Store readable guide state on lightweight Outliner groups."""
+    if not node or not cmds.objExists(node):
+        return
+    if not cmds.attributeQuery(attribute, node=node, exists=True):
+        if value_type == "string":
+            cmds.addAttr(node, longName=attribute, dataType="string")
+        else:
+            cmds.addAttr(node, longName=attribute, attributeType=value_type)
+    if value_type == "string":
+        cmds.setAttr(
+            "{0}.{1}".format(node, attribute),
+            str(value),
+            type="string",
+        )
+    else:
+        cmds.setAttr("{0}.{1}".format(node, attribute), value)
+
+
+def _enable_demo_guide_in_model_panels(cmds):
+    """Ensure Maya model panels display HUD ornaments without changing cameras."""
+    try:
+        model_panels = cmds.getPanel(type="modelPanel") or []
+    except RuntimeError:
+        model_panels = []
+    for panel in model_panels:
+        try:
+            cmds.modelEditor(panel, edit=True, headsUpDisplay=True)
+        except RuntimeError:
+            pass
+
+
+def _sync_demo_guide_huds(cmds, guide_state):
+    """Keep only a compact stage line and optional one-line viewport hint."""
+    _remove_demo_guide_huds(cmds, LEGACY_DEMO_GUIDE_HUDS)
+    if not guide_state.get("enabled"):
+        _remove_demo_guide_huds(cmds)
+        guide_state["hud_names"] = []
+        return []
+
+    panel_data = guide_state["panel_data"]
+    created = [
+        _upsert_demo_guide_hud(
+            cmds,
+            DEMO_GUIDE_HUDS["summary"],
+            0,
+            0,
+            panel_data["hud_summary"],
+            font_size="large",
+            block_size="medium",
+            label_width=500,
+        ),
+    ]
+
+    if guide_state.get("show_stage_hint"):
+        created.append(_upsert_demo_guide_hud(
+            cmds,
+            DEMO_GUIDE_HUDS["hint"],
+            0,
+            1,
+            panel_data["hint"],
+            font_size="small",
+            block_size="small",
+            label_width=500,
+        ))
+    else:
+        _remove_demo_guide_huds(cmds, (DEMO_GUIDE_HUDS["hint"],))
+
+    _enable_demo_guide_in_model_panels(cmds)
+    guide_state["hud_names"] = created
+    return created
+
+
+def _write_demo_guide_group_state(cmds, guide_state):
+    """Mirror current HUD copy onto named Maya groups for inspection/testing."""
+    groups = guide_state.get("groups", {})
+    text = guide_state["text"]
+    guide_group = groups.get("guide")
+    stage_group = groups.get("stage_indicator")
+    legend_group = groups.get("legend")
+    hint_group = groups.get("stage_hint")
+
+    _set_demo_guide_attribute(
+        cmds, guide_group, "guideEnabled", guide_state["enabled"], "bool"
+    )
+    _set_demo_guide_attribute(
+        cmds, guide_group, "legendVisible", guide_state["show_legend"], "bool"
+    )
+    _set_demo_guide_attribute(
+        cmds,
+        guide_group,
+        "stageHintVisible",
+        guide_state["show_stage_hint"],
+        "bool",
+    )
+    _set_demo_guide_attribute(
+        cmds,
+        guide_group,
+        "playblastNote",
+        "Enable Show Ornaments so Maya HUD text appears in playblast.",
+        "string",
+    )
+    _set_demo_guide_attribute(
+        cmds, stage_group, "currentStage", int(text["stage"]), "long"
+    )
+    _set_demo_guide_attribute(
+        cmds, stage_group, "stageTitle", text["title"], "string"
+    )
+    _set_demo_guide_attribute(
+        cmds,
+        stage_group,
+        "stageDescription",
+        text["description"],
+        "string",
+    )
+    _set_demo_guide_attribute(
+        cmds,
+        legend_group,
+        "legendText",
+        " || ".join(DEMO_GUIDE_LEGEND_LINES),
+        "string",
+    )
+    _set_demo_guide_attribute(
+        cmds, hint_group, "stageHint", text["hint"], "string"
+    )
+    _set_demo_guide_attribute(
+        cmds, hint_group, "stageFocus", text["focus"], "string"
+    )
+
+
+def clear_demo_guide():
+    """Remove guide HUD entries and lifecycle groups without touching the scene."""
+    import maya.cmds as cmds
+
+    _remove_demo_guide_huds(cmds)
+    if cmds.objExists(DEMO_GUIDE_GROUP):
+        cmds.delete(DEMO_GUIDE_GROUP)
+
+
+def create_demo_guide(
+    scene_data,
+    stage=0,
+    enabled=True,
+    show_legend=True,
+    show_stage_hint=True,
+):
+    """Create one lightweight HUD guide and its named lifecycle groups."""
+    import maya.cmds as cmds
+
+    clear_demo_guide()
+    safe_stage = max(0, min(7, int(stage)))
+    guide_state = {
+        "enabled": bool(enabled),
+        "show_legend": bool(show_legend),
+        "show_stage_hint": bool(show_stage_hint),
+        "stage": safe_stage,
+        "text": build_demo_guide_text(scene_data, safe_stage),
+        "panel_data": build_demo_guide_panel_data(scene_data, safe_stage),
+        "groups": {},
+        "hud_names": [],
+        "viewport_overlay": "maya_heads_up_display",
+        "playblast_requires_show_ornaments": True,
+    }
+    scene_data["demo_guide"] = guide_state
+    if not guide_state["enabled"]:
+        return guide_state
+
+    guide_group = cmds.group(empty=True, name=DEMO_GUIDE_GROUP)
+    stage_group = cmds.group(empty=True, name=DEMO_GUIDE_STAGE_GROUP)
+    legend_group = cmds.group(empty=True, name=DEMO_GUIDE_LEGEND_GROUP)
+    hint_group = cmds.group(empty=True, name=DEMO_GUIDE_HINT_GROUP)
+    cmds.parent(stage_group, legend_group, hint_group, guide_group)
+    if cmds.objExists(ROOT_GROUP):
+        parented = cmds.parent(guide_group, ROOT_GROUP)
+        if parented:
+            guide_group = parented[0]
+
+    guide_state["groups"] = {
+        "guide": DEMO_GUIDE_GROUP,
+        "stage_indicator": DEMO_GUIDE_STAGE_GROUP,
+        "legend": DEMO_GUIDE_LEGEND_GROUP,
+        "stage_hint": DEMO_GUIDE_HINT_GROUP,
+    }
+    _write_demo_guide_group_state(cmds, guide_state)
+    _sync_demo_guide_huds(cmds, guide_state)
+    return guide_state
+
+
+def update_demo_guide(
+    scene_data,
+    stage=None,
+    enabled=None,
+    show_legend=None,
+    show_stage_hint=None,
+):
+    """Update guide copy and visibility for one stage without rebuilding Maya."""
+    import maya.cmds as cmds
+
+    if scene_data is None:
+        clear_demo_guide()
+        return None
+
+    prior_state = scene_data.get("demo_guide") or {}
+    visual_params = scene_data.get("parameters", {}).get("visual", {})
+    safe_stage = max(
+        0,
+        min(
+            7,
+            int(
+                scene_data.get("demo_stage", 0)
+                if stage is None
+                else stage
+            ),
+        ),
+    )
+    resolved_enabled = bool(
+        visual_params.get("show_demo_guide", True)
+        if enabled is None
+        else enabled
+    )
+    resolved_legend = bool(
+        prior_state.get(
+            "show_legend",
+            visual_params.get("show_demo_legend", True),
+        )
+        if show_legend is None
+        else show_legend
+    )
+    resolved_hint = bool(
+        prior_state.get(
+            "show_stage_hint",
+            visual_params.get("show_demo_stage_hint", True),
+        )
+        if show_stage_hint is None
+        else show_stage_hint
+    )
+
+    if not resolved_enabled:
+        clear_demo_guide()
+        guide_state = {
+            "enabled": False,
+            "show_legend": resolved_legend,
+            "show_stage_hint": resolved_hint,
+            "stage": safe_stage,
+            "text": build_demo_guide_text(scene_data, safe_stage),
+            "panel_data": build_demo_guide_panel_data(scene_data, safe_stage),
+            "groups": {},
+            "hud_names": [],
+            "viewport_overlay": "maya_heads_up_display",
+            "playblast_requires_show_ornaments": True,
+        }
+        scene_data["demo_guide"] = guide_state
+        return guide_state
+
+    if not cmds.objExists(DEMO_GUIDE_GROUP):
+        return create_demo_guide(
+            scene_data,
+            stage=safe_stage,
+            enabled=True,
+            show_legend=resolved_legend,
+            show_stage_hint=resolved_hint,
+        )
+
+    prior_state.update({
+        "enabled": True,
+        "show_legend": resolved_legend,
+        "show_stage_hint": resolved_hint,
+        "stage": safe_stage,
+        "text": build_demo_guide_text(scene_data, safe_stage),
+        "panel_data": build_demo_guide_panel_data(scene_data, safe_stage),
+        "viewport_overlay": "maya_heads_up_display",
+        "playblast_requires_show_ornaments": True,
+    })
+    prior_state.setdefault("groups", {
+        "guide": DEMO_GUIDE_GROUP,
+        "stage_indicator": DEMO_GUIDE_STAGE_GROUP,
+        "legend": DEMO_GUIDE_LEGEND_GROUP,
+        "stage_hint": DEMO_GUIDE_HINT_GROUP,
+    })
+    _write_demo_guide_group_state(cmds, prior_state)
+    _sync_demo_guide_huds(cmds, prior_state)
+    scene_data["demo_guide"] = prior_state
+    return prior_state
 
 
 def create_maya_scene(config=None, prior_cell_state=None):
@@ -141,6 +1451,12 @@ def create_maya_scene(config=None, prior_cell_state=None):
     bee_scale = visual_params.get("bee_scale", 1.0)
     queen_scale = visual_params.get("queen_scale", bee_scale * 1.45)
     show_paths = visual_params.get("show_paths", True)
+    show_demo_guide = visual_params.get("show_demo_guide", True)
+    show_demo_legend = visual_params.get("show_demo_legend", True)
+    show_demo_stage_hint = visual_params.get(
+        "show_demo_stage_hint",
+        True,
+    )
     demo_max_active_bees = visual_params.get(
         "demo_max_active_bees",
         DEFAULT_DEMO_MAX_ACTIVE_BEES,
@@ -401,6 +1717,13 @@ def create_maya_scene(config=None, prior_cell_state=None):
         "camera_setup": camera_setup,
         "render_background": render_background,
     }
+    scene_data["demo_guide"] = create_demo_guide(
+        scene_data,
+        stage=0,
+        enabled=show_demo_guide,
+        show_legend=show_demo_legend,
+        show_stage_hint=show_demo_stage_hint,
+    )
     apply_demo_stage(scene_data, 0)
 
     # A first Generate should present the deliberately wide overview. Later
@@ -2274,12 +3597,14 @@ def apply_demo_stage(scene_data, stage):
     scene_data["active_demo_frame"] = cmds.currentTime(query=True)
     scene_data["active_playback_range"] = (range_start, range_end)
     scene_data["visible_demo_groups"] = sorted(visible_keys)
+    guide_state = update_demo_guide(scene_data, safe_stage)
     return {
         "stage": safe_stage,
         "label": DEMO_STAGE_LABELS[safe_stage],
         "frame": scene_data["active_demo_frame"],
         "playback_range": scene_data["active_playback_range"],
         "visible_groups": scene_data["visible_demo_groups"],
+        "demo_guide": guide_state,
     }
 
 
@@ -2854,6 +4179,8 @@ def clear_scene(preserve_camera=False):
     """
     import maya.cmds as cmds
 
+    clear_demo_guide()
+
     if preserve_camera and cmds.objExists(CAMERA_LIGHT_GROUP):
         camera_parent = cmds.listRelatives(
             CAMERA_LIGHT_GROUP,
@@ -2894,6 +4221,7 @@ def clear_scene(preserve_camera=False):
         "CloudHive_RenderBackground_GRP",
         "CloudHive_Labels_GRP",
         "CloudHiveMeadow_GRP",
+        DEMO_GUIDE_GROUP,
     ]
     groups_to_delete.extend(
         cmds.ls("CloudHive_Cycle_*_Stages_GRP", type="transform") or []
