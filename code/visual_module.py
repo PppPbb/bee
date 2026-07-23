@@ -8,6 +8,7 @@ from bee_task_module import (
     animate_bee_collection_cycle,
     calculate_bee_frames_per_unit,
     create_bee_geometry,
+    create_queen_geometry,
     create_task_path_visuals,
     plan_bee_collection_cycle,
 )
@@ -138,6 +139,7 @@ def create_maya_scene(config=None, prior_cell_state=None):
     cloud_scale = visual_params.get("cloud_scale", 0.85)
     flowers_per_cloud = visual_params.get("flowers_per_cloud", 5)
     bee_scale = visual_params.get("bee_scale", 1.0)
+    queen_scale = visual_params.get("queen_scale", bee_scale * 1.45)
     show_paths = visual_params.get("show_paths", True)
     demo_max_active_bees = visual_params.get(
         "demo_max_active_bees",
@@ -196,6 +198,7 @@ def create_maya_scene(config=None, prior_cell_state=None):
     # authoring a second long drop animation that the demo no longer plays.
     _replace_empty_group(cmds, DEMO_VISUAL_GROUPS["falling_drops"])
     create_bee_geometry(bees, bee_scale=bee_scale)
+
     bee_base_transforms = {
         bee["id"]: list(
             cmds.xform(
@@ -219,6 +222,11 @@ def create_maya_scene(config=None, prior_cell_state=None):
             tasks,
             demo_max_active_bees,
         )
+    )
+    queen = create_queen_geometry(
+        cells,
+        queen_scale=queen_scale,
+        cell_depth=cell_depth,
     )
     path_visuals = []
     if show_paths:
@@ -361,6 +369,7 @@ def create_maya_scene(config=None, prior_cell_state=None):
         "drops": drops,
         "tasks": tasks,
         "bees": bees,
+        "queen": queen,
         "summary": simulation["summary"],
         "completed_tasks": simulation["completed_tasks"],
         "animation_records": animation_records,
@@ -403,13 +412,16 @@ def create_maya_scene(config=None, prior_cell_state=None):
             pass
 
     print("Cloud-Hive Bloomfield Maya visualization created.")
-    print("Cells: {0}, Clouds: {1}, Drops: {2}, Tasks: {3}, Bees: {4}".format(
-        len(cells),
-        len(clouds),
-        len(drops),
-        len(tasks),
-        len(bees),
-    ))
+    print(
+        "Cells: {0}, Clouds: {1}, Drops: {2}, Tasks: {3}, Bees: {4}, Queen: {5}".format(
+            len(cells),
+            len(clouds),
+            len(drops),
+            len(tasks),
+            len(bees),
+            1 if queen else 0,
+        )
+    )
 
     return scene_data
 
