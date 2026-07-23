@@ -58,13 +58,14 @@ DEFAULT_INTEGRATION_PARAMETERS = {
         "animation_end": 320,
         "drop_fall_frames": 64,
         "bee_frame_step": 22,
-        "frame_duration_multiplier": 4.0,
+        "frame_duration_multiplier": 8.0,
         # 0 disables the optional presentation cap and uses every available bee.
         "demo_max_active_bees": 0,
         "show_paths": True,
         "show_demo_guide": True,
         "show_demo_legend": True,
         "show_demo_stage_hint": True,
+        "show_bee_pov_camera": True,
         "render_background": True,
     },
 }

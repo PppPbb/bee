@@ -7,8 +7,11 @@ WINDOW_NAME = "CloudHiveControlPanel"
 WINDOW_TITLE = "Cloud-Hive Bloomfield Control Panel"
 GUIDE_WINDOW_NAME = "CloudHiveDemoGuidePanel"
 GUIDE_WINDOW_TITLE = "Cloud-Hive Bloomfield Demo Guide"
+BEE_POV_WINDOW_NAME = "CloudHiveBeePOVPreviewPanel"
+BEE_POV_WINDOW_TITLE = "Bee POV Step Preview"
 CONTROLS = {}
 GUIDE_CONTROLS = {}
+BEE_POV_CONTROLS = {}
 LAST_SCENE_DATA = None
 CURRENT_PARAMETERS = None
 SIMULATION_STEP = 0
@@ -119,6 +122,9 @@ def _ensure_controls(cmds):
         "show_demo_legend",
         "show_demo_stage_hint",
         "open_demo_guide",
+        "show_bee_pov_preview",
+        "open_bee_pov_preview",
+        "record_bee_pov",
         "next_step",
         "status",
     )
@@ -172,6 +178,7 @@ def _read_parameters(cmds):
         cmds,
         "show_demo_stage_hint",
     )
+    visual["show_bee_pov_camera"] = _bool_value(cmds, "show_bee_pov_preview")
     simulation["cycle"] = SIMULATION_STEP
     return parameters
 
@@ -973,6 +980,200 @@ def _start_guide_legend_pulse(cmds):
     return GUIDE_PULSE_JOB_ID
 
 
+
+def _bee_pov_window_position(cmds, default_position=(40, 80)):
+    """Place the POV window near the control panel without hiding it."""
+    try:
+        control_corner = cmds.window(
+            WINDOW_NAME,
+            query=True,
+            topLeftCorner=True,
+        )
+        control_width = int(cmds.window(WINDOW_NAME, query=True, width=True))
+        return (int(control_corner[0]) + max(420, control_width) + 18, int(control_corner[1]) + 24)
+    except (RuntimeError, TypeError, ValueError):
+        return default_position
+
+
+def _on_bee_pov_window_closed(*_args):
+    """Forget cached panel controls when the retained POV window closes."""
+    BEE_POV_CONTROLS.clear()
+
+
+def update_bee_pov_preview(scene_data=None, stage=None, playback_status=None):
+    """Update the separate bee-eye preview window for the active stage."""
+    import maya.cmds as cmds
+    from visual_module import update_bee_pov_camera
+
+    active_scene = LAST_SCENE_DATA if scene_data is None else scene_data
+    active_stage = CURRENT_DEMO_STAGE if stage is None else int(stage)
+    setup = update_bee_pov_camera(active_scene, active_stage)
+    if not setup or not setup.get("enabled"):
+        return setup
+
+    status = playback_status or setup.get("label", "Bee POV")
+    label = "{0} | {1}".format(setup.get("label", "Bee POV"), status)
+    if (
+        not cmds.about(batch=True)
+        and cmds.window(BEE_POV_WINDOW_NAME, exists=True)
+    ):
+        status_control = BEE_POV_CONTROLS.get("status")
+        if status_control and cmds.control(status_control, exists=True):
+            cmds.text(status_control, edit=True, label=label)
+        panel = BEE_POV_CONTROLS.get("panel")
+        camera = setup.get("camera")
+        if panel and cmds.modelPanel(panel, exists=True) and camera and cmds.objExists(camera):
+            _configure_bee_pov_model_panel(cmds, panel, camera)
+    return setup
+
+
+
+def _configure_bee_pov_model_panel(cmds, panel, camera):
+    """Bind one modelPanel to the bee POV camera with defensive display flags."""
+    if not panel or not cmds.modelPanel(panel, exists=True):
+        return False
+    if not camera or not cmds.objExists(camera):
+        return False
+    try:
+        cmds.modelPanel(panel, edit=True, camera=camera)
+        cmds.lookThru(panel, camera)
+    except RuntimeError:
+        pass
+
+    for flag_name, value in (
+        ("displayAppearance", "smoothShaded"),
+        ("displayTextures", True),
+        ("allObjects", True),
+        ("grid", False),
+        ("nurbsCurves", True),
+        ("polymeshes", True),
+        ("locators", True),
+        ("cameras", False),
+        ("lights", False),
+        ("hud", False),
+    ):
+        try:
+            cmds.modelEditor(panel, edit=True, **{flag_name: value})
+        except RuntimeError:
+            pass
+    try:
+        cmds.setFocus(panel)
+    except RuntimeError:
+        pass
+    return True
+
+
+def frame_bee_pov_preview(*_args):
+    """Refocus the preview panel on the bee POV camera and refresh the viewport."""
+    import maya.cmds as cmds
+
+    setup = update_bee_pov_preview(
+        LAST_SCENE_DATA,
+        CURRENT_DEMO_STAGE,
+        playback_status="Refreshed",
+    )
+    if not setup:
+        return None
+    panel = BEE_POV_CONTROLS.get("panel")
+    camera = setup.get("camera")
+    if panel and camera:
+        _configure_bee_pov_model_panel(cmds, panel, camera)
+        try:
+            cmds.currentTime(
+                setup.get("active_playback_range", (cmds.currentTime(query=True),))[0]
+            )
+        except RuntimeError:
+            pass
+        try:
+            cmds.refresh(force=True)
+        except RuntimeError:
+            pass
+    return setup
+
+
+def show_bee_pov_preview(scene_data=None, *_args):
+    """Open or refresh the separate bee first-person preview window."""
+    import maya.cmds as cmds
+
+    active_scene = LAST_SCENE_DATA if scene_data is None else scene_data
+    setup = update_bee_pov_preview(
+        active_scene,
+        CURRENT_DEMO_STAGE,
+        playback_status="Ready",
+    )
+    if cmds.about(batch=True):
+        return setup
+    if not setup or not setup.get("enabled") or not setup.get("camera"):
+        return None
+
+    if cmds.window(BEE_POV_WINDOW_NAME, exists=True):
+        if BEE_POV_CONTROLS.get("panel"):
+            cmds.showWindow(BEE_POV_WINDOW_NAME)
+            update_bee_pov_preview(active_scene, CURRENT_DEMO_STAGE)
+            return BEE_POV_WINDOW_NAME
+        cmds.deleteUI(BEE_POV_WINDOW_NAME, window=True)
+
+    BEE_POV_CONTROLS.clear()
+    window = cmds.window(
+        BEE_POV_WINDOW_NAME,
+        title=BEE_POV_WINDOW_TITLE,
+        widthHeight=(430, 320),
+        topLeftCorner=_bee_pov_window_position(cmds),
+        sizeable=True,
+        retain=True,
+        closeCommand=_on_bee_pov_window_closed,
+    )
+    cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
+    BEE_POV_CONTROLS["status"] = cmds.text(
+        label="Bee POV",
+        align="left",
+        height=24,
+    )
+    cmds.rowLayout(numberOfColumns=4, adjustableColumn=1, columnWidth4=(110, 92, 92, 124))
+    cmds.button(label="Replay POV", command=play_animation)
+    cmds.button(label="Pause", command=pause_animation)
+    cmds.button(label="Refresh", command=frame_bee_pov_preview)
+    cmds.button(label="Use POV Render", command=use_bee_pov_render_camera)
+    cmds.setParent("..")
+    pane = cmds.paneLayout(configuration="single", height=238)
+    panel = cmds.modelPanel(
+        label="Bee POV",
+        camera=setup["camera"],
+        parent=pane,
+    )
+    BEE_POV_CONTROLS["panel"] = panel
+    _configure_bee_pov_model_panel(cmds, panel, setup["camera"])
+    cmds.setParent("..")
+    cmds.showWindow(window)
+    update_bee_pov_preview(active_scene, CURRENT_DEMO_STAGE)
+    frame_bee_pov_preview()
+    return window
+
+
+def close_bee_pov_preview(*_args):
+    """Close the bee POV preview window without changing scene state."""
+    import maya.cmds as cmds
+
+    BEE_POV_CONTROLS.clear()
+    if not cmds.about(batch=True) and cmds.window(BEE_POV_WINDOW_NAME, exists=True):
+        cmds.deleteUI(BEE_POV_WINDOW_NAME, window=True)
+
+
+def open_bee_pov_preview(*_args):
+    """Maya callback that opens the current bee POV preview."""
+    return show_bee_pov_preview(LAST_SCENE_DATA)
+
+
+def use_bee_pov_render_camera(*_args):
+    """Switch renderability to the bee POV camera for playblast/render setup."""
+    from visual_module import set_bee_pov_renderable
+
+    setup = set_bee_pov_renderable(LAST_SCENE_DATA, renderable=True)
+    if setup:
+        print("Bee POV render camera enabled:", setup.get("camera"))
+    return setup
+
+
 def _guide_window_position(cmds):
     """Place the guide beside the Control Panel instead of below the screen."""
     default_position = (80, 50)
@@ -1450,6 +1651,11 @@ def _stage_playback_finished(serial, end_frame):
         CURRENT_DEMO_STAGE,
         playback_status="Ready",
     )
+    update_bee_pov_preview(
+        LAST_SCENE_DATA,
+        CURRENT_DEMO_STAGE,
+        playback_status="Step complete",
+    )
     cmds.refresh(force=True)
     return True
 
@@ -1489,6 +1695,11 @@ def play_stage_transition(scene_data=None, stage=None):
     active_scene["last_played_stage"] = active_stage
     active_scene["last_played_range"] = (start_frame, end_frame)
     update_demo_guide_panel(
+        active_scene,
+        active_stage,
+        playback_status="Playing",
+    )
+    update_bee_pov_preview(
         active_scene,
         active_stage,
         playback_status="Playing",
@@ -1565,6 +1776,10 @@ def generate_from_ui(*_args):
         )
     else:
         close_demo_guide_panel()
+    if CURRENT_PARAMETERS.get("visual", {}).get("show_bee_pov_camera", True):
+        show_bee_pov_preview(LAST_SCENE_DATA)
+    else:
+        close_bee_pov_preview()
     _update_status(cmds)
     print("Generated Cloud-Hive Bloomfield base scene. No autoplay.")
     print("Base Scene - click Next Simulation Step to show natural resource drops.")
@@ -1759,6 +1974,11 @@ def next_simulation_step(*_args):
         CURRENT_DEMO_STAGE,
         playback_status="Ready",
     )
+    update_bee_pov_preview(
+        LAST_SCENE_DATA,
+        CURRENT_DEMO_STAGE,
+        playback_status="Ready",
+    )
 
     print("Stage {0} - {1}.".format(
         CURRENT_DEMO_STAGE,
@@ -1808,6 +2028,236 @@ def next_simulation_step(*_args):
     return LAST_SCENE_DATA
 
 
+
+def _desktop_recording_dir():
+    """Return a timestamped desktop directory for rendered POV segments."""
+    import datetime
+    import os
+
+    desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = os.path.join(desktop, "BeePOV_Recording_{0}".format(timestamp))
+    os.makedirs(output_dir, exist_ok=True)
+    return output_dir
+
+
+def _prepare_next_step_for_recording(cmds):
+    """Advance one demo step and author the next cycle when needed, without playback."""
+    from visual_module import apply_demo_stage, create_maya_scene
+
+    global LAST_SCENE_DATA, CURRENT_PARAMETERS, SIMULATION_STEP, CURRENT_DEMO_STAGE
+
+    if LAST_SCENE_DATA is None:
+        generate_from_ui()
+
+    if CURRENT_DEMO_STAGE >= 7:
+        prior_cell_state = _capture_cell_state(LAST_SCENE_DATA)
+        next_step = int(SIMULATION_STEP) + 1
+        next_parameters = copy.deepcopy(CURRENT_PARAMETERS)
+        next_parameters.setdefault("simulation", {})["cycle"] = next_step
+        _set_status(cmds, "Recording | Preparing Cycle {0}...".format(next_step))
+        update_demo_guide_panel(
+            LAST_SCENE_DATA,
+            CURRENT_DEMO_STAGE,
+            playback_status="Recording prepare",
+        )
+        cmds.refresh(force=True)
+        LAST_SCENE_DATA = _build_scene_without_viewport_scrub(
+            cmds,
+            create_maya_scene,
+            next_parameters,
+            prior_cell_state=prior_cell_state,
+        )
+        CURRENT_PARAMETERS = next_parameters
+        SIMULATION_STEP = next_step
+        CURRENT_DEMO_STAGE = 1
+    else:
+        CURRENT_DEMO_STAGE += 1
+
+    stage_state = apply_demo_stage(LAST_SCENE_DATA, CURRENT_DEMO_STAGE)
+    update_demo_guide_panel(
+        LAST_SCENE_DATA,
+        CURRENT_DEMO_STAGE,
+        playback_status="Recording",
+    )
+    update_bee_pov_preview(
+        LAST_SCENE_DATA,
+        CURRENT_DEMO_STAGE,
+        playback_status="Recording",
+    )
+    return stage_state
+
+
+def _playblast_current_bee_pov_segment(cmds, output_dir, segment_index, width=1280, height=720):
+    """Playblast the active step from the bee POV preview panel."""
+    import os
+
+    setup = update_bee_pov_preview(
+        LAST_SCENE_DATA,
+        CURRENT_DEMO_STAGE,
+        playback_status="Recording segment {0}".format(segment_index),
+    )
+    if not setup or not setup.get("camera"):
+        raise RuntimeError("Bee POV camera is not available for recording.")
+
+    show_bee_pov_preview(LAST_SCENE_DATA)
+    panel = BEE_POV_CONTROLS.get("panel")
+    camera = setup.get("camera")
+    if panel and camera:
+        _configure_bee_pov_model_panel(cmds, panel, camera)
+    try:
+        cmds.setFocus(panel)
+    except RuntimeError:
+        pass
+
+    start_frame, end_frame = setup.get(
+        "active_playback_range",
+        LAST_SCENE_DATA.get("active_playback_range", (1, 2)),
+    )
+    start_frame = int(start_frame)
+    end_frame = max(start_frame + 1, int(end_frame))
+    cmds.currentTime(start_frame)
+    cmds.refresh(force=True)
+
+    filename = os.path.join(
+        output_dir,
+        "bee_pov_step_{0:02d}_cycle_{1:03d}_stage_{2}.avi".format(
+            int(segment_index),
+            int(SIMULATION_STEP),
+            int(CURRENT_DEMO_STAGE),
+        ),
+    )
+    try:
+        result = cmds.playblast(
+            startTime=start_frame,
+            endTime=end_frame,
+            format="avi",
+            filename=filename,
+            forceOverwrite=True,
+            clearCache=True,
+            viewer=False,
+            showOrnaments=True,
+            percent=100,
+            quality=90,
+            widthHeight=(int(width), int(height)),
+            offScreen=True,
+        )
+    except RuntimeError:
+        result = cmds.playblast(
+            startTime=start_frame,
+            endTime=end_frame,
+            format="avi",
+            filename=filename,
+            forceOverwrite=True,
+            clearCache=True,
+            viewer=False,
+            showOrnaments=True,
+            percent=100,
+            quality=90,
+            widthHeight=(int(width), int(height)),
+        )
+    return result or filename
+
+
+def _try_concatenate_recording_segments(output_dir, segment_paths):
+    """Use ffmpeg when available to create one continuous desktop mp4."""
+    import os
+    import shutil
+    import subprocess
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+
+    list_path = os.path.join(output_dir, "segments.txt")
+    with open(list_path, "w", encoding="utf-8") as list_file:
+        for path in segment_paths:
+            normalized = os.path.abspath(path).replace("\\", "/")
+            list_file.write("file '{0}'\n".format(normalized.replace("'", "\\'")))
+
+    output_path = os.path.join(output_dir, "BeePOV_12Step_Continuous.mp4")
+    command = [
+        ffmpeg,
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        list_path,
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        output_path,
+    ]
+    try:
+        subprocess.check_call(command)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return output_path
+
+
+def record_bee_pov_twelve_steps(*_args):
+    """Record twelve consecutive simulation steps from the bee POV camera."""
+    import os
+    import maya.cmds as cmds
+
+    global PLAYBACK_ACTIVE
+
+    _ensure_controls(cmds)
+    _cancel_stage_playback(cmds)
+    output_dir = _desktop_recording_dir()
+    segment_paths = []
+    _set_status(cmds, "Recording 12 Bee POV steps... pre-rendering segments.")
+    print("Bee POV recording output:", output_dir)
+
+    if LAST_SCENE_DATA is None:
+        generate_from_ui()
+
+    for segment_index in range(1, 13):
+        _set_status(
+            cmds,
+            "Recording Bee POV step {0}/12...".format(segment_index),
+        )
+        print("Recording Bee POV step {0}/12".format(segment_index))
+        _prepare_next_step_for_recording(cmds)
+        segment_path = _playblast_current_bee_pov_segment(
+            cmds,
+            output_dir,
+            segment_index,
+        )
+        segment_paths.append(segment_path)
+
+    merged_path = _try_concatenate_recording_segments(output_dir, segment_paths)
+    if merged_path:
+        message = "Bee POV recording complete: {0}".format(merged_path)
+    else:
+        message = (
+            "Bee POV segments complete. Install ffmpeg to auto-merge. "
+            "Folder: {0}"
+        ).format(output_dir)
+    _set_status(cmds, message)
+    update_demo_guide_panel(
+        LAST_SCENE_DATA,
+        CURRENT_DEMO_STAGE,
+        playback_status="Recording complete",
+    )
+    update_bee_pov_preview(
+        LAST_SCENE_DATA,
+        CURRENT_DEMO_STAGE,
+        playback_status="Recording complete",
+    )
+    print(message)
+    for path in segment_paths:
+        print("  segment:", path)
+    return {
+        "output_dir": output_dir,
+        "segments": segment_paths,
+        "merged_video": merged_path,
+    }
+
+
 def play_animation(*_args):
     """Replay the current stage's prepared transition segment once."""
     return play_stage_transition(LAST_SCENE_DATA, CURRENT_DEMO_STAGE)
@@ -1821,6 +2271,11 @@ def pause_animation(*_args):
 
     _cancel_stage_playback(cmds)
     update_demo_guide_panel(
+        LAST_SCENE_DATA,
+        CURRENT_DEMO_STAGE,
+        playback_status="Paused",
+    )
+    update_bee_pov_preview(
         LAST_SCENE_DATA,
         CURRENT_DEMO_STAGE,
         playback_status="Paused",
@@ -1842,6 +2297,11 @@ def reset_animation(*_args):
             LAST_SCENE_DATA,
             CURRENT_DEMO_STAGE,
             playback_status="Reset at frame 1",
+        )
+        update_bee_pov_preview(
+            LAST_SCENE_DATA,
+            CURRENT_DEMO_STAGE,
+            playback_status="Reset",
         )
         cmds.refresh(force=True)
     else:
@@ -2055,6 +2515,31 @@ def show_ui(initial_scene_data=None):
     )
     cmds.setParent("..")
 
+    cmds.frameLayout(
+        label="Bee POV Preview",
+        collapsable=True,
+        marginWidth=8,
+        marginHeight=8,
+    )
+    pov_enabled = bool(visual_defaults.get("show_bee_pov_camera", True))
+    CONTROLS["show_bee_pov_preview"] = cmds.checkBox(
+        label="Show Bee POV Preview",
+        value=pov_enabled,
+    )
+    CONTROLS["open_bee_pov_preview"] = cmds.button(
+        label="Open Bee POV Window",
+        height=28,
+        command=open_bee_pov_preview,
+    )
+    cmds.text(
+        label="A small model-panel window follows the active worker camera for each step.",
+        align="left",
+        recomputeSize=False,
+        wordWrap=True,
+        height=34,
+    )
+    cmds.setParent("..")
+
     cmds.button(label="Generate Scene", height=38, command=generate_from_ui)
     cmds.button(label="Clear Scene", height=32, command=clear_scene_from_ui)
     cmds.button(label="Run Pure Python Summary", height=32, command=run_pure_python_summary)
@@ -2062,6 +2547,11 @@ def show_ui(initial_scene_data=None):
         label="Next Simulation Step",
         height=32,
         command=next_simulation_step,
+    )
+    CONTROLS["record_bee_pov"] = cmds.button(
+        label="Record 12-Step Bee POV",
+        height=34,
+        command=record_bee_pov_twelve_steps,
     )
 
     cmds.rowLayout(numberOfColumns=3, adjustableColumn=1, columnWidth3=(135, 135, 135))
@@ -2080,4 +2570,8 @@ def show_ui(initial_scene_data=None):
         show_demo_guide_panel(LAST_SCENE_DATA)
     else:
         close_demo_guide_panel()
+    if bool(visual_defaults.get("show_bee_pov_camera", True)):
+        show_bee_pov_preview(LAST_SCENE_DATA)
+    else:
+        close_bee_pov_preview()
     return window

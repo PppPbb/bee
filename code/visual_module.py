@@ -32,17 +32,19 @@ from main import load_parameters, run_simulation
 ROOT_GROUP = "CloudHive_Visualization_GRP"
 CAMERA_LIGHT_GROUP = "CloudHive_CameraLight_GRP"
 OVERVIEW_CAMERA = "CloudHive_Render_CAM"
+BEE_POV_CAMERA = "CloudHive_BeePOV_CAM"
+BEE_POV_GROUP = "CloudHive_BeePOV_GRP"
 LEGACY_ANIMATION_START = 1000
 DEMO_STAGE_BASE_RANGES = {
     0: (1, 2),
-    1: (10, 58),
-    2: (70, 94),
-    3: (106, 136),
-    4: (148, 196),
-    5: (208, 238),
+    1: (10, 106),
+    2: (118, 166),
+    3: (178, 238),
+    4: (250, 346),
+    5: (358, 418),
 }
-DEMO_COLLECTION_START = 250
-DEMO_COLLECTION_FRAME_STEP = 6
+DEMO_COLLECTION_START = 430
+DEMO_COLLECTION_FRAME_STEP = 12
 DEMO_STAGE_FOUR_COMPLETION_HOLD_FRAMES = 6
 DEFAULT_DEMO_MAX_ACTIVE_BEES = 0
 DEMO_STAGE_LABELS = {
@@ -1483,7 +1485,7 @@ def create_maya_scene(config=None, prior_cell_state=None):
     create_drop_particles(drops)
     frame_duration_multiplier = max(
         0.01,
-        float(visual_params.get("frame_duration_multiplier", 4.0)),
+        float(visual_params.get("frame_duration_multiplier", 8.0)),
     )
     animation_end = int(visual_params.get("animation_end", 320) * frame_duration_multiplier)
     drop_fall_frames = int(visual_params.get("drop_fall_frames", 64) * frame_duration_multiplier)
@@ -1617,11 +1619,11 @@ def create_maya_scene(config=None, prior_cell_state=None):
     )
     collection_end = max(
         (task.get("animation_end_frame", 1) for task in collection_tasks),
-        default=DEMO_COLLECTION_START + 48,
+        default=DEMO_COLLECTION_START + 96,
     )
-    stage_six_end = max(DEMO_COLLECTION_START + 48, int(collection_end))
+    stage_six_end = max(DEMO_COLLECTION_START + 96, int(collection_end))
     stage_seven_start = stage_six_end + 12
-    stage_seven_end = stage_seven_start + 40
+    stage_seven_end = stage_seven_start + 80
     playback_ranges = dict(DEMO_STAGE_BASE_RANGES)
     playback_ranges.update({
         6: (DEMO_COLLECTION_START, stage_six_end),
@@ -1676,6 +1678,7 @@ def create_maya_scene(config=None, prior_cell_state=None):
             camera_setup["camera_shape"],
             scene_radius=ground_radius,
         )
+    bee_pov_setup = None
     _parent_known_scene_groups(additional_groups=[cycle_group])
 
     scene_data = {
@@ -1716,7 +1719,12 @@ def create_maya_scene(config=None, prior_cell_state=None):
         "demo_stage": 0,
         "camera_setup": camera_setup,
         "render_background": render_background,
+        "bee_pov": bee_pov_setup,
     }
+    scene_data["bee_pov"] = create_bee_pov_camera(
+        scene_data,
+        enabled=visual_params.get("show_bee_pov_camera", True),
+    )
     scene_data["demo_guide"] = create_demo_guide(
         scene_data,
         stage=0,
@@ -3540,6 +3548,438 @@ def _key_compact_resource_updates(
             )
 
 
+
+def create_bee_pov_camera(scene_data, enabled=True):
+    """Create and key a renderable bee-eye camera for every demo stage."""
+    import maya.cmds as cmds
+
+    if not enabled or not scene_data:
+        scene_data["bee_pov"] = {"enabled": False, "camera": None}
+        return scene_data["bee_pov"]
+
+    if not cmds.objExists(CAMERA_LIGHT_GROUP):
+        cmds.group(empty=True, name=CAMERA_LIGHT_GROUP)
+    if cmds.objExists(BEE_POV_GROUP):
+        cmds.delete(BEE_POV_GROUP)
+    pov_group = cmds.group(empty=True, name=BEE_POV_GROUP)
+    cmds.parent(pov_group, CAMERA_LIGHT_GROUP)
+
+    camera_transform, camera_shape = cmds.camera(name=BEE_POV_CAMERA)
+    cmds.parent(camera_transform, pov_group)
+    camera_transform = cmds.listRelatives(
+        camera_shape,
+        parent=True,
+        fullPath=False,
+    )[0]
+    camera_shape = cmds.listRelatives(
+        camera_transform,
+        shapes=True,
+        type="camera",
+        fullPath=False,
+    )[0]
+    cmds.setAttr(camera_shape + ".focalLength", 16)
+    cmds.setAttr(camera_shape + ".nearClipPlane", 0.05)
+    cmds.setAttr(camera_shape + ".farClipPlane", 1000.0)
+    if cmds.attributeQuery("displayFilmGate", node=camera_shape, exists=True):
+        cmds.setAttr(camera_shape + ".displayFilmGate", 0)
+    if cmds.attributeQuery("renderable", node=camera_shape, exists=True):
+        cmds.setAttr(camera_shape + ".renderable", 0)
+
+    stage_keys = {}
+    prior_time = cmds.currentTime(query=True)
+    try:
+        for stage in range(0, 8):
+            stage_keys[stage] = _key_bee_pov_stage_camera(
+                cmds,
+                scene_data,
+                stage,
+                camera_transform,
+            )
+    finally:
+        cmds.currentTime(prior_time)
+
+    setup = {
+        "enabled": True,
+        "camera": camera_transform,
+        "camera_shape": camera_shape,
+        "group": pov_group,
+        "stage_keys": stage_keys,
+        "active_stage": 0,
+        "window_title": "Bee POV Preview",
+    }
+    scene_data["bee_pov"] = setup
+    update_bee_pov_camera(scene_data, 0)
+    return setup
+
+
+def update_bee_pov_camera(scene_data, stage=None):
+    """Sync bee POV metadata to the currently selected demo stage."""
+    import maya.cmds as cmds
+
+    if not scene_data:
+        return None
+    setup = scene_data.get("bee_pov") or {}
+    camera = setup.get("camera")
+    if not setup.get("enabled") or not camera or not cmds.objExists(camera):
+        return setup
+
+    safe_stage = max(0, min(7, int(stage if stage is not None else scene_data.get("demo_stage", 0))))
+    playback_range = scene_data.get("demo_playback_ranges", {}).get(
+        safe_stage,
+        (1, 2),
+    )
+    setup["active_stage"] = safe_stage
+    setup["active_playback_range"] = (
+        int(playback_range[0]),
+        max(int(playback_range[0]) + 1, int(playback_range[1])),
+    )
+    setup["label"] = "Bee POV | Stage {0} - {1}".format(
+        safe_stage,
+        DEMO_STAGE_LABELS.get(safe_stage, "Demo"),
+    )
+    scene_data["bee_pov"] = setup
+    return setup
+
+
+def set_bee_pov_renderable(scene_data, renderable=True):
+    """Make the bee POV camera the active render camera when requested."""
+    import maya.cmds as cmds
+
+    setup = update_bee_pov_camera(scene_data)
+    if not setup or not setup.get("camera_shape"):
+        return None
+    target_shape = setup["camera_shape"]
+    for camera_shape in cmds.ls(type="camera") or []:
+        if cmds.attributeQuery("renderable", node=camera_shape, exists=True):
+            cmds.setAttr(
+                camera_shape + ".renderable",
+                1 if renderable and camera_shape == target_shape else 0,
+            )
+    return setup
+
+
+def _key_bee_pov_stage_camera(cmds, scene_data, stage, camera_transform):
+    """Key the POV camera either on a moving worker or a stage focus point."""
+    playback_range = scene_data.get("demo_playback_ranges", {}).get(stage, (1, 2))
+    start_frame = int(playback_range[0])
+    end_frame = max(start_frame + 1, int(playback_range[1]))
+    bridge_camera_state = _previous_stage_camera_state(
+        cmds,
+        scene_data,
+        stage,
+        camera_transform,
+    )
+    bee_object = _stage_pov_bee_object(scene_data, stage)
+    samples = _stage_pov_sample_frames(scene_data, stage, start_frame, end_frame)
+    interest = _stage_interest_point(scene_data, stage)
+    keyed = []
+
+    if not bee_object or not cmds.objExists(bee_object):
+        fallback_position = _fallback_bee_pov_position(scene_data)
+        for frame in samples:
+            target = interest or (fallback_position[0], fallback_position[1], fallback_position[2] + 1.0)
+            _key_camera_look_at(cmds, camera_transform, frame, fallback_position, target)
+            keyed.append(frame)
+        return {"mode": "fallback", "frames": keyed, "bee_object": None}
+
+    sampled_positions = []
+    prior_time = cmds.currentTime(query=True)
+    try:
+        for frame in samples:
+            cmds.currentTime(frame)
+            position = cmds.xform(
+                bee_object,
+                query=True,
+                translation=True,
+                worldSpace=True,
+            )
+            sampled_positions.append((
+                float(position[0]),
+                float(position[1]),
+                float(position[2]),
+            ))
+    finally:
+        cmds.currentTime(prior_time)
+
+    for index, frame in enumerate(samples):
+        bee_position = sampled_positions[index]
+        if index < len(sampled_positions) - 1:
+            target = _bee_eye_position(sampled_positions[index + 1])
+            if _distance_between(_bee_eye_position(bee_position), target) < 0.08:
+                target = interest
+        else:
+            target = interest
+        if target is None or _distance_between(_bee_eye_position(bee_position), target) < 0.08:
+            target = (
+                float(bee_position[0]),
+                float(bee_position[1]) + 0.25,
+                float(bee_position[2]) + 1.0,
+            )
+        position = _bee_chase_camera_position(bee_position, target)
+        _key_camera_look_at(cmds, camera_transform, frame, position, target)
+        keyed.append(frame)
+
+    if bridge_camera_state is not None:
+        _key_camera_state(cmds, camera_transform, start_frame, bridge_camera_state)
+
+    try:
+        cmds.keyTangent(
+            camera_transform,
+            attribute=(
+                "translateX",
+                "translateY",
+                "translateZ",
+                "rotateX",
+                "rotateY",
+                "rotateZ",
+            ),
+            time=(start_frame, end_frame),
+            inTangentType="linear",
+            outTangentType="linear",
+        )
+    except RuntimeError:
+        pass
+
+    return {"mode": "bee_follow", "frames": keyed, "bee_object": bee_object}
+
+
+def _previous_stage_camera_state(cmds, scene_data, stage, camera_transform):
+    """Return previous stage camera transform so recording boundaries connect."""
+    safe_stage = int(stage)
+    if safe_stage <= 0:
+        return None
+    previous_range = scene_data.get("demo_playback_ranges", {}).get(safe_stage - 1)
+    if not previous_range:
+        return None
+    prior_time = cmds.currentTime(query=True)
+    try:
+        cmds.currentTime(int(previous_range[1]))
+        translation = cmds.xform(
+            camera_transform,
+            query=True,
+            translation=True,
+            worldSpace=True,
+        )
+        rotation = cmds.xform(
+            camera_transform,
+            query=True,
+            rotation=True,
+            worldSpace=True,
+        )
+        return {
+            "translation": tuple(float(value) for value in translation),
+            "rotation": tuple(float(value) for value in rotation),
+        }
+    except RuntimeError:
+        return None
+    finally:
+        cmds.currentTime(prior_time)
+
+
+def _key_camera_state(cmds, camera_transform, frame, state):
+    """Key an exact camera transform state at one frame."""
+    for axis, value in zip("XYZ", state.get("translation", (0.0, 0.0, 0.0))):
+        cmds.setKeyframe(
+            camera_transform,
+            attribute="translate{0}".format(axis),
+            time=int(frame),
+            value=float(value),
+        )
+    for axis, value in zip("XYZ", state.get("rotation", (0.0, 0.0, 0.0))):
+        cmds.setKeyframe(
+            camera_transform,
+            attribute="rotate{0}".format(axis),
+            time=int(frame),
+            value=float(value),
+        )
+
+
+def _stage_pov_sample_frames(scene_data, stage, start_frame, end_frame):
+    """Return compact sample frames for smooth enough Maya camera playback."""
+    keyed = []
+    if stage == 4:
+        crawl = (scene_data.get("transition_visuals", {}) or {}).get(
+            "stage_four_crawl",
+            {},
+        )
+        keyed = list(crawl.get("frames") or [])
+    elif stage == 6:
+        task = _first_active_collection_task(scene_data)
+        keyed = list((task or {}).get("frames") or [])
+    if not keyed:
+        span = max(1, int(end_frame) - int(start_frame))
+        step = max(2, min(8, span // 8 or 2))
+        keyed = list(range(int(start_frame), int(end_frame) + 1, step))
+    keyed.extend([start_frame, end_frame])
+    return sorted({
+        max(int(start_frame), min(int(end_frame), int(frame)))
+        for frame in keyed
+    })
+
+
+def _stage_pov_bee_object(scene_data, stage):
+    """Pick the worker that best represents the current presentation step."""
+    if stage == 4:
+        crawl = (scene_data.get("transition_visuals", {}) or {}).get(
+            "stage_four_crawl",
+            {},
+        )
+        if crawl.get("bee_object"):
+            return crawl["bee_object"]
+    if stage == 6:
+        task = _first_active_collection_task(scene_data)
+        bee_id = (task or {}).get("bee_id") or (task or {}).get("assigned_bee_id")
+        bee = _bee_by_id(scene_data, bee_id)
+        if bee and bee.get("maya_object"):
+            return bee["maya_object"]
+    bees = scene_data.get("bees", [])
+    for bee in bees:
+        if bee.get("maya_object"):
+            return bee["maya_object"]
+    return None
+
+
+def _first_active_collection_task(scene_data):
+    for task in scene_data.get("collection_tasks", []) or []:
+        if task.get("demo_active"):
+            return task
+    return None
+
+
+def _bee_by_id(scene_data, bee_id):
+    for bee in scene_data.get("bees", []) or []:
+        if bee.get("id") == bee_id:
+            return bee
+    return None
+
+
+def _stage_interest_point(scene_data, stage):
+    """Return a world-space point the POV should notice in a static step."""
+    import maya.cmds as cmds
+
+    groups_by_stage = {
+        1: [DEMO_VISUAL_GROUPS["natural_drops"], "CloudHive_Clouds_GRP"],
+        2: [DEMO_VISUAL_GROUPS["mapping"], DEMO_VISUAL_GROUPS["validation"]],
+        3: [DEMO_VISUAL_GROUPS["direct_storage"], DEMO_VISUAL_GROUPS["task_markers"]],
+        4: [DEMO_VISUAL_GROUPS["bfs_paths"], DEMO_VISUAL_GROUPS["bee_selections"]],
+        5: [DEMO_VISUAL_GROUPS["collection_triggers"]],
+        6: [DEMO_VISUAL_GROUPS["collection_visuals"], DEMO_VISUAL_GROUPS["collection_triggers"]],
+        7: [DEMO_VISUAL_GROUPS["deposit_updates"]],
+    }
+    candidate_groups = groups_by_stage.get(int(stage), [
+        "CloudHive_Honeycomb_GRP",
+        "CloudHive_Clouds_GRP",
+    ])
+    bounded = [node for node in candidate_groups if cmds.objExists(node)]
+    if bounded:
+        try:
+            bounds = cmds.exactWorldBoundingBox(*bounded)
+            return (
+                (bounds[0] + bounds[3]) * 0.5,
+                (bounds[1] + bounds[4]) * 0.5,
+                (bounds[2] + bounds[5]) * 0.5,
+            )
+        except RuntimeError:
+            pass
+
+    points = []
+    for cell in scene_data.get("cells", []) or []:
+        position = cell.get("position")
+        if position:
+            points.append(position)
+    for cloud in scene_data.get("clouds", []) or []:
+        position = cloud.get("position")
+        if position:
+            points.append(position)
+    if not points:
+        return (0.0, 0.8, 0.0)
+    return tuple(sum(float(point[index]) for point in points) / len(points) for index in range(3))
+
+
+def _fallback_bee_pov_position(scene_data):
+    bees = scene_data.get("bees", []) or []
+    interest = _stage_interest_point(scene_data, scene_data.get("demo_stage", 0))
+    for bee in bees:
+        position = bee.get("animation_start_position") or bee.get("position")
+        if position:
+            return _bee_chase_camera_position(position, interest)
+    return (0.0, 1.45, -3.0)
+
+
+def _bee_chase_camera_position(bee_position, target):
+    """Return an over-the-shoulder bee POV that still shows the task context."""
+    eye = _bee_eye_position(bee_position)
+    if target is None:
+        target = (eye[0], eye[1], eye[2] + 1.0)
+    dx = float(target[0]) - eye[0]
+    dz = float(target[2]) - eye[2]
+    horizontal = math.sqrt(dx * dx + dz * dz)
+    if horizontal < 0.000001:
+        dx, dz, horizontal = 0.0, 1.0, 1.0
+    forward_x = dx / horizontal
+    forward_z = dz / horizontal
+    chase_distance = 1.75
+    side_offset = 0.18
+    height_offset = 0.72
+    return (
+        eye[0] - forward_x * chase_distance - forward_z * side_offset,
+        eye[1] + height_offset,
+        eye[2] - forward_z * chase_distance + forward_x * side_offset,
+    )
+
+
+def _bee_eye_position(position):
+    return (
+        float(position[0]),
+        float(position[1]) + 0.28,
+        float(position[2]),
+    )
+
+
+def _distance_between(first, second):
+    return math.sqrt(
+        sum((float(first[index]) - float(second[index])) ** 2 for index in range(3))
+    )
+
+
+def _key_camera_look_at(cmds, camera_transform, frame, position, target):
+    rotation = _camera_rotation_from_points(position, target)
+    for axis, value in zip("XYZ", position):
+        cmds.setKeyframe(
+            camera_transform,
+            attribute="translate{0}".format(axis),
+            time=int(frame),
+            value=float(value),
+        )
+    for axis, value in zip("XYZ", rotation):
+        cmds.setKeyframe(
+            camera_transform,
+            attribute="rotate{0}".format(axis),
+            time=int(frame),
+            value=float(value),
+        )
+
+
+def _camera_rotation_from_points(position, target):
+    target_vector = (
+        float(target[0]) - float(position[0]),
+        float(target[1]) - float(position[1]),
+        float(target[2]) - float(position[2]),
+    )
+    horizontal = math.sqrt(
+        target_vector[0] * target_vector[0]
+        + target_vector[2] * target_vector[2]
+    )
+    if horizontal < 0.000001 and abs(target_vector[1]) < 0.000001:
+        return (0.0, 0.0, 0.0)
+
+    # Maya cameras look down their local -Z axis. Match frame_scene_overview()
+    # so the POV camera actually faces the target instead of looking away.
+    pitch = math.degrees(math.atan2(target_vector[1], horizontal))
+    yaw = math.degrees(math.atan2(-target_vector[0], -target_vector[2]))
+    return (pitch, yaw, 0.0)
+
+
 def organize_demo_cycle_groups(cycle_number):
     """Nest all prepared stage layers under one cycle-specific Maya group."""
     import maya.cmds as cmds
@@ -3566,11 +4006,60 @@ def apply_demo_stage(scene_data, stage):
         0: set(),
         1: {"natural_drops"},
         2: {"natural_drops", "mapping", "validation"},
-        3: {"direct_storage", "task_markers", "blocked_tasks"},
-        4: {"task_markers", "bee_selections", "bfs_paths", "blocked_tasks"},
-        5: {"collection_triggers"},
-        6: {"collection_triggers", "collection_visuals"},
-        7: {"deposit_updates", "blocked_tasks"},
+        3: {
+            "natural_drops",
+            "mapping",
+            "validation",
+            "direct_storage",
+            "task_markers",
+            "blocked_tasks",
+        },
+        4: {
+            "natural_drops",
+            "mapping",
+            "validation",
+            "direct_storage",
+            "task_markers",
+            "bee_selections",
+            "bfs_paths",
+            "blocked_tasks",
+        },
+        5: {
+            "natural_drops",
+            "mapping",
+            "validation",
+            "direct_storage",
+            "task_markers",
+            "bee_selections",
+            "bfs_paths",
+            "blocked_tasks",
+            "collection_triggers",
+        },
+        6: {
+            "natural_drops",
+            "mapping",
+            "validation",
+            "direct_storage",
+            "task_markers",
+            "bee_selections",
+            "bfs_paths",
+            "blocked_tasks",
+            "collection_triggers",
+            "collection_visuals",
+        },
+        7: {
+            "natural_drops",
+            "mapping",
+            "validation",
+            "direct_storage",
+            "task_markers",
+            "bee_selections",
+            "bfs_paths",
+            "blocked_tasks",
+            "collection_triggers",
+            "collection_visuals",
+            "deposit_updates",
+        },
     }
     visible_keys = visible_by_stage[safe_stage]
     groups = scene_data.get("demo_visual_groups", DEMO_VISUAL_GROUPS)
@@ -4218,6 +4707,7 @@ def clear_scene(preserve_camera=False):
         "CloudHive_CollectionVisuals_GRP",
         "CloudHive_DepositUpdate_GRP",
         CAMERA_LIGHT_GROUP,
+        BEE_POV_GROUP,
         "CloudHive_RenderBackground_GRP",
         "CloudHive_Labels_GRP",
         "CloudHiveMeadow_GRP",
@@ -5440,6 +5930,7 @@ def _parent_known_scene_groups(additional_groups=None):
         "CloudHive_CellResources_GRP",
         "CloudHive_Ground_GRP",
         "CloudHive_CameraLight_GRP",
+        BEE_POV_GROUP,
         "CloudHive_Labels_GRP",
     ]
     generated_groups.extend(additional_groups or [])
