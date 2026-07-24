@@ -182,7 +182,7 @@ Current Maya-only interface:
 - `create_maya_scene(config, prior_cell_state=None)`: runs the pure Python data flow and creates the Maya scene.
 - `clear_scene()`: removes previous generated Cloud-Hive Bloomfield objects.
 - `setup_camera_and_lighting(scene_radius)`: creates a camera plus a warm key, cool fill, top fill, low ambient light, and an Arnold skydome fill when MtoA is available. Cast shadows are disabled for the flat, bright pixel-art presentation.
-- `create_render_background(camera_transform, camera_shape, ...)`: creates a camera-locked, texture-free purple-to-gold sunset background using a vertical procedural ramp and three small two-tone pixel-cloud accents. It selects the render camera while preserving the user's existing Maya output resolution.
+- `create_render_background(camera_transform, camera_shape, ...)`: creates a world-space, inward-facing 360-degree sky sphere with a seamless texture-free purple-to-gold vertical ramp and a varied ring of two-tone pixel-cloud accents. It remains visible from orbiting viewport and render cameras while preserving the user's existing Maya output resolution.
 - `create_falling_resource_effects(drops, clouds, ...)`: animates shared-shape voxel instances for nectar, pollen, and glints.
 - `create_cell_resource_visuals(...)`: keeps cell contents synchronized with the action timeline: visible resource increases when a drop lands, decreases when a bee picks it up, and increases again in the target cell at delivery. Nectar uses discrete merged voxel stacks, pollen uses shared cube instances, and caps use voxel plates.
 - `create_blocked_task_visuals(...)`: marks cells whose cleanup/transport tasks have no BFS path.

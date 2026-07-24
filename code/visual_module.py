@@ -5075,10 +5075,12 @@ def create_render_background(
     camera_shape,
     scene_radius=9.0,
 ):
-    """Create a camera-locked procedural sunset backdrop and distant clouds.
+    """Create a world-space 360-degree sunset sky and distant pixel clouds.
 
-    The background uses a Maya ramp feeding a surface shader, so it requires no
-    image texture and renders consistently without receiving scene lighting.
+    An inward-facing sphere surrounds the scene, so orbiting any viewport or
+    render camera cannot move past a backdrop edge. The sky uses a V-only ramp
+    feeding a surface shader, which keeps the gradient seamless around the full
+    horizon and independent from scene lighting.
     """
     import maya.cmds as cmds
 
@@ -5086,14 +5088,13 @@ def create_render_background(
     if cmds.objExists(group_name):
         cmds.delete(group_name)
     background_group = cmds.group(empty=True, name=group_name)
-    cmds.parent(background_group, camera_transform, relative=True)
     # Remove shader nodes left by the earlier visible sun-disk version.
     for legacy_sun_node in ("chm_sunset_sun_SG", "chm_sunset_sun_SURF"):
         if cmds.objExists(legacy_sun_node):
             cmds.delete(legacy_sun_node)
 
-    # Respect the user's existing Maya render size. The background adapts to
-    # that aspect ratio but never changes Render Settings or Render View scale.
+    # Respect the user's existing Maya render size. The spherical background
+    # never needs to change Render Settings or Render View scale.
     if cmds.objExists("defaultResolution"):
         safe_width = max(1, int(cmds.getAttr("defaultResolution.width")))
         safe_height = max(1, int(cmds.getAttr("defaultResolution.height")))
@@ -5113,7 +5114,6 @@ def create_render_background(
     else:
         safe_width = 960
         safe_height = 540
-    aspect_ratio = float(safe_width) / float(safe_height)
 
     for scene_camera_shape in cmds.ls(type="camera") or []:
         if cmds.attributeQuery("renderable", node=scene_camera_shape, exists=True):
@@ -5122,35 +5122,53 @@ def create_render_background(
                 1 if scene_camera_shape == camera_shape else 0,
             )
 
-    focal_length = max(1.0, float(cmds.getAttr(camera_shape + ".focalLength")))
-    film_aperture_mm = max(
-        1.0,
-        float(cmds.getAttr(camera_shape + ".horizontalFilmAperture")) * 25.4,
+    safe_scene_radius = max(1.0, float(scene_radius))
+    try:
+        camera_position = cmds.xform(
+            camera_transform,
+            query=True,
+            translation=True,
+            worldSpace=True,
+        )
+        camera_distance = math.sqrt(sum(
+            float(component) * float(component)
+            for component in camera_position
+        ))
+    except (RuntimeError, TypeError, ValueError):
+        camera_distance = safe_scene_radius * 4.0
+
+    # The radius includes generous room for the overview camera and interactive
+    # orbiting.  It remains far enough away to read visually as an infinite sky.
+    background_radius = max(
+        80.0,
+        safe_scene_radius * 14.0,
+        camera_distance + safe_scene_radius * 8.0,
     )
-    backdrop_distance = max(36.0, float(scene_radius) * 5.5)
     if cmds.attributeQuery("farClipPlane", node=camera_shape, exists=True):
         current_far_clip = float(cmds.getAttr(camera_shape + ".farClipPlane"))
         cmds.setAttr(
             camera_shape + ".farClipPlane",
-            max(current_far_clip, backdrop_distance + 20.0),
+            max(current_far_clip, background_radius * 1.5),
         )
-    half_view_width = backdrop_distance * film_aperture_mm / (2.0 * focal_length)
-    backdrop_width = half_view_width * 2.0 * 1.18
-    backdrop_height = backdrop_width / aspect_ratio
 
-    backdrop = cmds.polyPlane(
-        width=backdrop_width,
-        height=backdrop_height,
-        subdivisionsX=1,
-        subdivisionsY=1,
+    backdrop = cmds.polySphere(
+        radius=background_radius,
+        subdivisionsX=48,
+        subdivisionsY=24,
+        axis=(0.0, 1.0, 0.0),
+        createUVs=2,
         constructionHistory=False,
-        name="CloudHive_Sunset_Backdrop_GEO",
+        name="CloudHive_Sunset_SkyDome_GEO",
     )[0]
-    cmds.parent(backdrop, background_group, relative=True)
-    cmds.setAttr(backdrop + ".translate", 0.0, 0.0, -backdrop_distance, type="double3")
-    # A Maya polyPlane is born on XZ. Rotating -90 degrees places it on XY
-    # while retaining a bottom-to-top V coordinate for the vertical ramp.
-    cmds.setAttr(backdrop + ".rotateX", -90.0)
+    cmds.parent(backdrop, background_group)
+    # Maya spheres face outward by default. Reverse them so Arnold and viewport
+    # back-face rules both treat the interior as the visible sky surface.
+    cmds.polyNormal(
+        backdrop,
+        normalMode=0,
+        userNormalMode=0,
+        constructionHistory=False,
+    )
 
     ramp_name = "chm_sunset_sky_gradient_RMP"
     if cmds.objExists(ramp_name) and cmds.nodeType(ramp_name) != "ramp":
@@ -5177,12 +5195,12 @@ def create_render_background(
     cmds.setAttr(ramp + ".type", 0)
     cmds.setAttr(ramp + ".interpolation", 3)
     gradient_entries = (
-        # The primitive plane's rendered V direction runs from image top to
-        # bottom, so purple is entered first and warm gold last.
-        (0, 0.00, (0.29, 0.30, 0.58)),
-        (1, 0.34, (0.66, 0.45, 0.64)),
-        (2, 0.68, (1.00, 0.67, 0.40)),
-        (3, 1.00, (1.00, 0.55, 0.18)),
+        # A sphere's V coordinate runs from its lower pole to upper pole.
+        # Keeping the ramp V-only makes every azimuth share the same sunset.
+        (0, 0.00, (1.00, 0.55, 0.18)),
+        (1, 0.32, (1.00, 0.67, 0.40)),
+        (2, 0.66, (0.66, 0.45, 0.64)),
+        (3, 1.00, (0.29, 0.30, 0.58)),
     )
     for entry_index, position, color in gradient_entries:
         entry = "{0}.colorEntryList[{1}]".format(ramp, entry_index)
@@ -5220,68 +5238,81 @@ def create_render_background(
         "chm_sunset_distant_cloud_shadow_SG",
         (0.77, 0.65, 0.75),
     )
+    distant_cloud_patterns = (
+        (
+            (-2, 0, "shadow"), (-1, 0, "shadow"), (0, 0, "shadow"),
+            (1, 0, "shadow"), (2, 0, "shadow"),
+            (-1, 1, "light"), (0, 1, "light"), (1, 1, "light"),
+            (2, 1, "light"), (0, 2, "light"), (1, 2, "light"),
+        ),
+        (
+            (-3, 0, "shadow"), (-2, 0, "shadow"), (-1, 0, "shadow"),
+            (0, 0, "shadow"), (1, 0, "shadow"), (2, 0, "shadow"),
+            (-2, 1, "light"), (-1, 1, "light"), (0, 1, "light"),
+            (1, 1, "light"), (-1, 2, "light"),
+        ),
+        (
+            (-2, 0, "shadow"), (-1, 0, "shadow"), (0, 0, "shadow"),
+            (1, 0, "shadow"), (2, 0, "shadow"), (3, 0, "shadow"),
+            (-1, 1, "light"), (0, 1, "light"), (1, 1, "light"),
+            (2, 1, "light"), (1, 2, "light"),
+        ),
+        (
+            (-2, 0, "shadow"), (-1, 0, "shadow"), (0, 0, "shadow"),
+            (1, 0, "shadow"),
+            (-1, 1, "light"), (0, 1, "light"), (1, 1, "light"),
+            (-1, 2, "light"), (0, 2, "light"), (0, 3, "light"),
+        ),
+    )
+    # Angle, vertical position, angular block size, and shape index.  The
+    # irregular spacing prevents the 360-degree cloud ring from reading as a
+    # repeated fence while ensuring every viewing direction has distant detail.
     distant_cloud_specs = (
-        (
-            -0.43,
-            0.24,
-            0.024,
-            (
-                (-2, 0, "shadow"), (-1, 0, "shadow"), (0, 0, "shadow"),
-                (1, 0, "shadow"), (2, 0, "shadow"),
-                (-1, 1, "light"), (0, 1, "light"), (1, 1, "light"),
-                (2, 1, "light"), (0, 2, "light"), (1, 2, "light"),
-            ),
-        ),
-        (
-            -0.10,
-            0.30,
-            0.019,
-            (
-                (-2, 0, "shadow"), (-1, 0, "shadow"), (0, 0, "shadow"),
-                (1, 0, "shadow"), (2, 0, "shadow"),
-                (-1, 1, "light"), (0, 1, "light"), (1, 1, "light"),
-                (0, 2, "light"),
-            ),
-        ),
-        (
-            0.29,
-            0.34,
-            0.017,
-            (
-                (-2, 0, "shadow"), (-1, 0, "shadow"), (0, 0, "shadow"),
-                (1, 0, "shadow"), (2, 0, "shadow"),
-                (-1, 1, "light"), (0, 1, "light"), (1, 1, "light"),
-                (1, 2, "light"),
-            ),
-        ),
+        (4.0, 0.15, 0.0105, 0),
+        (39.0, 0.25, 0.0080, 3),
+        (78.0, 0.18, 0.0120, 1),
+        (118.0, 0.31, 0.0075, 2),
+        (154.0, 0.20, 0.0095, 3),
+        (194.0, 0.27, 0.0110, 0),
+        (236.0, 0.16, 0.0085, 2),
+        (274.0, 0.29, 0.0100, 1),
+        (319.0, 0.19, 0.0125, 0),
+        (346.0, 0.34, 0.0070, 3),
     )
     distant_cloud_groups = []
     distant_cloud_shapes = []
     for cloud_index, (
-        anchor_x_ratio,
-        anchor_y_ratio,
+        angle_degrees,
+        height_ratio,
         block_ratio,
-        block_pattern,
+        pattern_index,
     ) in enumerate(distant_cloud_specs):
+        angle_radians = math.radians(angle_degrees)
+        cloud_ring_radius = background_radius * 0.88
         cloud_group = cmds.group(
             empty=True,
             name="CloudHive_DistantCloud_{0:02d}_GRP".format(cloud_index),
         )
-        cmds.parent(cloud_group, background_group, relative=True)
+        cmds.parent(cloud_group, background_group)
         cmds.setAttr(
             cloud_group + ".translate",
-            backdrop_width * anchor_x_ratio,
-            backdrop_height * anchor_y_ratio,
-            0.0,
+            math.sin(angle_radians) * cloud_ring_radius,
+            background_radius * height_ratio,
+            math.cos(angle_radians) * cloud_ring_radius,
             type="double3",
         )
+        # Local -Z points toward the scene center, keeping each cloud face
+        # readable from cameras orbiting inside the background sphere.
+        cmds.setAttr(cloud_group + ".rotateY", angle_degrees)
         distant_cloud_groups.append(cloud_group)
-        block_size = backdrop_height * block_ratio
+        block_size = background_radius * block_ratio
+        block_depth = max(0.04, background_radius * 0.0025)
+        block_pattern = distant_cloud_patterns[pattern_index]
         for block_index, (grid_x, grid_y, shade) in enumerate(block_pattern):
             block = cmds.polyCube(
                 width=block_size * 1.02,
                 height=block_size * 1.02,
-                depth=0.04,
+                depth=block_depth,
                 constructionHistory=False,
                 name="CloudHive_DistantCloud_{0:02d}_block_{1:02d}".format(
                     cloud_index,
@@ -5293,7 +5324,7 @@ def create_render_background(
                 block + ".translate",
                 grid_x * block_size,
                 grid_y * block_size,
-                -backdrop_distance + 0.26,
+                0.0,
                 type="double3",
             )
             shading_group = (
@@ -5307,12 +5338,15 @@ def create_render_background(
 
     backdrop_shape = (cmds.listRelatives(backdrop, shapes=True) or [None])[0]
     if backdrop_shape:
+        if cmds.attributeQuery("doubleSided", node=backdrop_shape, exists=True):
+            cmds.setAttr(backdrop_shape + ".doubleSided", 1)
         _set_background_render_stats(cmds, backdrop_shape)
 
     return {
         "group": background_group,
         "backdrop": backdrop,
         "backdrop_shape": backdrop_shape,
+        "background_radius": background_radius,
         "ramp": ramp,
         "place_2d": place_2d,
         "sky_shader": sky_shader,
